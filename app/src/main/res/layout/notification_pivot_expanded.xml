@@ -1,0 +1,4 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+    <include layout="@layout/notification_pivot" />
+    <TextView android:id="@+id/notification_hint" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="앱을 열지 않고 바로 전환할 수 있어요" android:textSize="12sp" android:maxLines="2" />
+</LinearLayout>

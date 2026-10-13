@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.pivotcontrol.app" android:versionCode="3" android:versionName="1.2.0">
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="35" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <queries><package android:name="moe.shizuku.privileged.api" /></queries>
+    <application android:label="모니터 피벗" android:theme="@style/AppTheme" android:icon="@drawable/ic_pivot" android:allowBackup="false" android:supportsRtl="true">
+        <meta-data android:name="moe.shizuku.client.V3_SUPPORT" android:value="true" />
+        <activity android:name=".MirrorActivity" android:exported="true" android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|uiMode" android:resizeableActivity="true">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity>
+        <activity android:name=".MainActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|uiMode" android:resizeableActivity="true" />
+        <service android:name=".MirrorService" android:exported="false" android:foregroundServiceType="mediaProjection" />
+        <provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="com.pivotcontrol.app.shizuku" android:multiprocess="false" android:enabled="true" android:exported="true" android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+</manifest>
