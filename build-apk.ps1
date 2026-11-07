@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$SdkPath,
     [string]$BuildToolsVersion = '36.0.0',
     [string]$BuildPath,
-    [string]$OutputName = 'PivotControl-1.2.0.apk',
+    [string]$OutputName = 'PivotControl-2.0.0.apk',
     [string]$KeyStorePath,
     [string]$KeyAlias = 'pivot',
     [string]$StorePassword = $env:PIVOT_STORE_PASSWORD

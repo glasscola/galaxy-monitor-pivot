@@ -1,281 +1,119 @@
 package com.pivotcontrol.app;
-
 import android.Manifest;
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.NotificationManager;
-import android.app.NotificationChannel;
-import android.content.Intent;
-import android.content.SharedPreferences;
+import android.app.*;
+import android.content.*;
 import android.content.pm.PackageManager;
-import android.content.res.ColorStateList;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.RectF;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
+import android.graphics.*;
 import android.hardware.display.DisplayManager;
-import android.media.projection.MediaProjectionConfig;
-import android.media.projection.MediaProjectionManager;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.os.SystemClock;
+import android.media.projection.*;
+import android.net.Uri;
+import android.os.*;
 import android.provider.Settings;
-import android.text.SpannableString;
-import android.text.Spanned;
-import android.text.style.AbsoluteSizeSpan;
-import android.view.Display;
-import android.view.Gravity;
-import android.view.View;
-import android.view.WindowInsets;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.Spinner;
-import android.widget.Switch;
-import android.widget.TextView;
-import java.util.ArrayList;
+import android.text.InputType;
+import android.view.*;
+import android.widget.*;
+import java.util.*;
 
-/** Default experience for Galaxy S20 wired mirroring, without DeX or Shizuku. */
 public class MirrorActivity extends Activity implements DisplayManager.DisplayListener {
-    private final int BG=0xff0d111b,CARD=0xff191f2e,TEXT=0xfff6f4ff,MUTED=0xffa4adc1,ACCENT=0xffb4a4ff;
-    private final Handler ui=new Handler(Looper.getMainLooper());
-    private final ArrayList<Display> screens=new ArrayList<>();
-    private DisplayManager dm; private SharedPreferences prefs;
-    private Spinner picker;
-    private TextView state,displayLabel,directionLabel,sessionBadge,notificationHint;
-    private View notificationSettings;
-    private MonitorPreview monitorPreview;
-    private Button portraitButton,landscapeButton,startButton,stopButton;
-    private Switch reverseSwitch,fillSwitch;
-    private boolean desiredPortrait=true, awaitingConsent,starting,restoringUi,awaitingConfig;
-    private long configDeadline;
-    private String idleMessage;
-    private int selectedId=-1,consentDisplay=-1;
-    private final Runnable tick=new Runnable() { @Override public void run() { refreshState(); ui.postDelayed(this,700); } };
-
-    @Override public void onCreate(Bundle saved) {
-        super.onCreate(saved); dm=(DisplayManager)getSystemService(DISPLAY_SERVICE); prefs=getSharedPreferences("mirror",MODE_PRIVATE);
-        desiredPortrait=prefs.getBoolean("portrait",true);
-        if (saved!=null) { awaitingConsent=saved.getBoolean("awaiting"); consentDisplay=saved.getInt("consentDisplay",-1); }
-        makeUi(); dm.registerDisplayListener(this,ui); refreshDisplays();
+    private Ui ui;private SceneStore store;private Scene scene;private DisplayManager dm;private final Handler handler=new Handler(Looper.getMainLooper());
+    private LinearLayout root,page,nav;private ScrollView scroll;private TextView state,monitorInfo,qualityInfo;private Button start,portraitButton,landscapeButton,guideButton,pauseButton;
+    private int tab,selected,displayId=-1,consentDisplay=-1;private boolean awaiting,starting;private long startAt;private String drawn;
+    private final Runnable tick=new Runnable(){public void run(){String saved=SceneStore.encode(store.load());if(!saved.equals(drawn)&&!awaiting){scene=store.load();draw(true);}refresh();handler.postDelayed(this,800);}};
+    @Override public void onCreate(Bundle b){super.onCreate(b);ui=new Ui(this);store=new SceneStore(this);scene=store.load();dm=(DisplayManager)getSystemService(DISPLAY_SERVICE);if(b!=null){tab=b.getInt("tab");awaiting=b.getBoolean("awaiting");consentDisplay=b.getInt("display",-1);}dm.registerDisplayListener(this,handler);chooseDisplay();draw(false);if(getIntent().getBooleanExtra("overlayPermission",false))handler.post(this::overlayPermission);}
+    @Override protected void onSaveInstanceState(Bundle b){super.onSaveInstanceState(b);b.putInt("tab",tab);b.putBoolean("awaiting",awaiting);b.putInt("display",consentDisplay);}
+    @Override protected void onResume(){super.onResume();MirrorService.hostVisible=true;if(MirrorService.running)startService(new Intent(this,MirrorService.class).setAction(MirrorService.HOST));scene=store.load();chooseDisplay();draw(true);handler.removeCallbacks(tick);handler.post(tick);}
+    @Override protected void onPause(){super.onPause();MirrorService.hostVisible=false;if(MirrorService.running)startService(new Intent(this,MirrorService.class).setAction(MirrorService.HOST));handler.removeCallbacks(tick);}
+    @Override protected void onDestroy(){handler.removeCallbacksAndMessages(null);dm.unregisterDisplayListener(this);super.onDestroy();}
+    @Override public void onConfigurationChanged(android.content.res.Configuration c){super.onConfigurationChanged(c);draw(true);}
+    private void chooseDisplay(){if(MirrorService.running){displayId=MirrorService.outputDisplay;return;}if(dm.getDisplay(displayId)!=null)return;displayId=-1;for(Display d:dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION))if(d.getDisplayId()!=0&&(d.getFlags()&Display.FLAG_PRIVATE)==0){displayId=d.getDisplayId();break;}}
+    @Override public void onDisplayAdded(int id){chooseDisplay();refresh();}
+    @Override public void onDisplayRemoved(int id){chooseDisplay();refresh();}
+    @Override public void onDisplayChanged(int id){refresh();}
+    private void draw(boolean preserve){
+        int y=preserve&&scroll!=null?scroll.getScrollY():0;selected=Math.min(selected,scene.items.size()-1);drawn=SceneStore.encode(scene);
+        root=ui.column();root.setBackgroundColor(Ui.BG);root.setOnApplyWindowInsetsListener((v,insets)->{Insets i=insets.getInsets(WindowInsets.Type.systemBars());v.setPadding(i.left,i.top,i.right,i.bottom);return insets;});
+        LinearLayout header=ui.row();header.setPadding(ui.dp(20),ui.dp(14),ui.dp(20),ui.dp(8));TextView title=ui.text("모니터 피벗",24,Ui.TEXT);title.setTypeface(null,Typeface.BOLD);header.addView(title,new LinearLayout.LayoutParams(0,-2,1));Button more=ui.button("도움말",false);header.addView(more);more.setOnClickListener(v->more());root.addView(header);
+        scroll=new ScrollView(this);scroll.setFillViewport(true);page=ui.column();page.setPadding(ui.dp(20),0,ui.dp(20),ui.dp(24));scroll.addView(page);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        state=ui.text("",13,Ui.MUTED);state.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);ui.add(page,state,8);
+        monitorInfo=null;qualityInfo=null;start=null;guideButton=null;pauseButton=null;portraitButton=null;landscapeButton=null;
+        if(tab==0)outputPage();else if(tab==1)regionsPage();else if(tab==2)layoutPage();else qualityPage();
+        nav=ui.row();nav.setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10));nav.setBackgroundColor(Ui.CARD);String[] tabs={"출력","영역","배치","화질"};for(int i=0;i<tabs.length;i++){final int k=i;Button b=ui.button(tabs[i],i==tab);ui.weight(nav,b);b.setOnClickListener(v->{tab=k;draw(false);});}root.addView(nav);setContentView(root);if(y>0)scroll.post(()->scroll.scrollTo(0,y));refresh();
     }
-    @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); b.putBoolean("awaiting",awaitingConsent); b.putInt("consentDisplay",consentDisplay); }
-    @Override protected void onResume() { super.onResume(); refreshDisplays(); ui.removeCallbacks(tick); ui.post(tick); }
-    @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); }
-    @Override protected void onDestroy() { dm.unregisterDisplayListener(this); ui.removeCallbacksAndMessages(null); super.onDestroy(); }
-    @Override public void onDisplayAdded(int id) { refreshDisplays(); }
-    @Override public void onDisplayRemoved(int id) { refreshDisplays(); }
-    @Override public void onDisplayChanged(int id) { refreshState(); }
-
-    private void makeUi() {
-        ScrollView scroll=new ScrollView(this); scroll.setFillViewport(true); scroll.setBackgroundColor(BG);
-        LinearLayout page=column(); page.setPadding(dp(22),dp(22),dp(22),dp(24)); scroll.addView(page);
-        scroll.setOnApplyWindowInsetsListener((v,insets)->{ android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars()); v.setPadding(bars.left,bars.top,bars.right,bars.bottom); return insets; });
-        LinearLayout header=new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); page.addView(header);
-        TextView title=text("모니터 피벗",28,TEXT); title.setTypeface(null,Typeface.BOLD); header.addView(title,new LinearLayout.LayoutParams(0,-2,1));
-        sessionBadge=text("연결 대기",12,MUTED); sessionBadge.setPadding(dp(10),dp(6),dp(10),dp(6)); sessionBadge.setBackground(shape(0xff252d40,20)); header.addView(sessionBadge);
-        add(page,text("화면 방향, 알림창에서 간편하게",14,MUTED),7,22);
-
-        LinearLayout screen=card(); page.addView(screen);
-        screen.addView(text("외부 모니터",12,MUTED));
-        displayLabel=text("모니터 연결 대기",17,TEXT); displayLabel.setTypeface(null,Typeface.BOLD); add(screen,displayLabel,6,0);
-        picker=new Spinner(this); add(screen,picker,8,0);
-        picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> parent,View v,int pos,long id) { if (pos<screens.size()) selectedId=screens.get(pos).getDisplayId(); refreshState(); }
-            @Override public void onNothingSelected(AdapterView<?> parent) {}
-        });
-        monitorPreview=new MonitorPreview(); screen.addView(monitorPreview,new LinearLayout.LayoutParams(-1,dp(118)));
-        directionLabel=text("세로 · 선택됨",13,ACCENT); directionLabel.setGravity(Gravity.CENTER); screen.addView(directionLabel);
-
-        TextView directionTitle=text("화면 방향",16,TEXT); directionTitle.setTypeface(null,Typeface.BOLD); add(page,directionTitle,22,10);
-        LinearLayout row=new LinearLayout(this); page.addView(row);
-        portraitButton=button("세로",false); landscapeButton=button("가로",false);
-        portraitButton.setTypeface(null,Typeface.BOLD); landscapeButton.setTypeface(null,Typeface.BOLD);
-        LinearLayout.LayoutParams first=new LinearLayout.LayoutParams(0,dp(92),1); first.rightMargin=dp(6); row.addView(portraitButton,first);
-        LinearLayout.LayoutParams second=new LinearLayout.LayoutParams(0,dp(92),1); second.leftMargin=dp(6); row.addView(landscapeButton,second);
-        portraitButton.setOnClickListener(v->choose(true)); landscapeButton.setOnClickListener(v->choose(false));
-        state=text("모니터를 연결하고 시작해 주세요.",13,MUTED); state.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); add(page,state,10,0);
-        startButton=button("화면 복제 시작",true); add(page,startButton,16,0); startButton.setOnClickListener(v->begin());
-        stopButton=button("화면 복제 종료",false); add(page,stopButton,16,0); stopButton.setOnClickListener(v->stop());
-
-        LinearLayout settings=card(); add(page,settings,22,0);
-        reverseSwitch=setting(settings,"반대 방향","위아래가 뒤집혀 보일 때",prefs.getBoolean("reverse",false));
-        View divider=new View(this); divider.setBackgroundColor(0xff2b3345); LinearLayout.LayoutParams line=new LinearLayout.LayoutParams(-1,dp(1)); line.topMargin=dp(10); line.bottomMargin=dp(10); settings.addView(divider,line);
-        fillSwitch=setting(settings,"화면 꽉 채우기","가장자리가 일부 잘릴 수 있어요",prefs.getBoolean("fill",false));
-        reverseSwitch.setOnCheckedChangeListener((v,on)->{ if (!restoringUi) updateOptions(); });
-        fillSwitch.setOnCheckedChangeListener((v,on)->{ if (!restoringUi) updateOptions(); });
-
-        LinearLayout info=card(); add(page,info,12,0);
-        TextView heading=text("알림에서 바로 전환",15,TEXT); heading.setTypeface(null,Typeface.BOLD); info.addView(heading);
-        notificationHint=text("복제를 시작한 뒤 알림창을 내려\n세로 · 가로 버튼을 눌러 보세요.",13,MUTED); add(info,notificationHint,6,0);
-        notificationSettings=button("알림 표시 켜기",false); add(info,notificationSettings,10,0); notificationSettings.setOnClickListener(v->openNotificationSettings());
-        Button more=button("사용 방법 · 더 보기",false); add(page,more,16,0); more.setOnClickListener(v->more());
-        TextView footer=text("PIVOT 1.2  ·  화면을 저장하거나 전송하지 않아요",11,MUTED); footer.setGravity(Gravity.CENTER); add(page,footer,16,0);
-        renderDirection();
-        setContentView(scroll);
+    private void outputPage(){
+        LinearLayout monitor=ui.card(page,"외부 모니터","연결된 화면에 맞춰 출력합니다.");
+        monitorInfo=ui.text("",15,Ui.TEXT);ui.add(monitor,monitorInfo,10);Button pick=ui.button("모니터 정보 · 선택",false);ui.add(monitor,pick,12);pick.setOnClickListener(v->monitorDialog());
+        LinearLayout direction=ui.card(page,"모니터 방향","모니터 본체를 돌린 방향을 선택하세요.");
+        LinearLayout row=ui.row();portraitButton=ui.button("세로",scene.portrait);landscapeButton=ui.button("가로",!scene.portrait);ui.weight(row,portraitButton);ui.weight(row,landscapeButton);ui.add(direction,row,12);
+        portraitButton.setOnClickListener(v->{scene.portrait=true;commit();draw(true);});landscapeButton.setOnClickListener(v->{scene.portrait=false;commit();draw(true);});
+        toggle(direction,"반대 방향으로 회전","화면의 위아래가 뒤집혀 있을 때",scene.reverse,on->{scene.reverse=on;commit();});
+        start=ui.button("화면 공유 시작",true);ui.add(page,start,18);start.setOnClickListener(v->{if(MirrorService.running||starting){stopService(new Intent(this,MirrorService.class));starting=false;handler.postDelayed(this::refresh,200);}else begin();});
+        LinearLayout regions=ui.card(page,"원하는 부분만 크게","파란 테두리로 범위를 정하고 웹서핑을 계속하세요.");
+        Button edit=ui.button("다른 앱 위에서 테두리 편집",true);ui.add(regions,edit,12);edit.setOnClickListener(v->editOverlay());
+        LinearLayout actions=ui.row();guideButton=ui.button("테두리 표시",false);pauseButton=ui.button("일시정지",false);ui.weight(actions,guideButton);ui.weight(actions,pauseButton);ui.add(regions,actions,8);guideButton.setOnClickListener(v->{if(!Settings.canDrawOverlays(this)){overlayPermission();return;}if(!scene.regions){message("영역 탭에서 ‘선택 영역 출력’을 켜거나 테두리를 편집해 주세요.");return;}send(MirrorService.GUIDE);});pauseButton.setOnClickListener(v->send(MirrorService.PAUSE));
+        ui.add(regions,ui.text("적용하면 파란 선만 남습니다. 알림창에서도 다시 편집하거나 선을 숨길 수 있어요.",13,Ui.MUTED),10);
+        presets(page);
     }
-    private void refreshDisplays() {
-        screens.clear(); ArrayList<String> names=new ArrayList<>(); int chosen=0;
-        for (Display d:dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)) {
-            if (d.getDisplayId()==Display.DEFAULT_DISPLAY||(d.getFlags()&Display.FLAG_PRIVATE)!=0) continue;
-            screens.add(d); names.add(d.getName()+" · #"+d.getDisplayId());
-            if (d.getDisplayId()==(MirrorService.running?MirrorService.outputDisplay:selectedId)) chosen=screens.size()-1;
-        }
-        if (screens.isEmpty()) { selectedId=-1; names.add("외부 모니터 연결 대기"); }
-        else selectedId=screens.get(chosen).getDisplayId();
-        picker.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,names)); picker.setSelection(chosen); picker.setVisibility(screens.size()>1?View.VISIBLE:View.GONE); refreshState();
+    private void regionsPage(){
+        LinearLayout card=ui.card(page,"출력할 영역","테두리는 화면 위치에 고정됩니다. 스크롤하면 안쪽 내용이 실시간으로 바뀝니다.");
+        toggle(card,"선택 영역 출력",scene.items.size()+"개 영역 · 끄면 휴대폰 전체 화면",scene.regions,on->{scene.regions=on;commit();});
+        Button topBottom=ui.button("위·아래만 보기 · 가운데 제외",false);ui.add(card,topBottom,10);topBottom.setOnClickListener(v->{scene.items.clear();scene.items.add(new Scene.Region(0,.08f,1,.32f));scene.items.add(new Scene.Region(0,.68f,1,.92f));scene.layout=0;scene.lockRatio=false;scene.regions=true;scene.arrange();selected=0;commit();draw(true);});
+        regionPicker(card);
+        SceneCanvas plan=canvas(false);ui.add(card,plan,10);
+        ui.add(card,ui.text("휴대폰 위치 미리보기 · 끌어 이동 / 오른쪽 아래 손잡이로 크기 조절",12,Ui.MUTED),4);
+        LinearLayout ratio=ui.row();Button free=ui.button("자유 비율",!scene.lockRatio),fixed=ui.button("모니터 비율",scene.lockRatio);ui.weight(ratio,free);ui.weight(ratio,fixed);ui.add(card,ratio,12);free.setOnClickListener(v->{scene.lockRatio=false;commit();draw(true);});fixed.setOnClickListener(v->{scene.lockRatio=true;int[] m=monitorSize(),p=phoneSize(),c=scene.canvas(m[0],m[1]);scene.matchMonitor(p[0],p[1],m[0],m[1]);scene.regions=true;commit();draw(true);});
+        LinearLayout quick=ui.row();String[] labels={"전체","위 절반","아래 절반"};for(int i=0;i<3;i++){final int k=i;Button b=ui.button(labels[i],false);ui.weight(quick,b);b.setOnClickListener(v->{scene.items.get(selected).source=new Scene.Box(0,k==2?.5f:0,1,k==1?.5f:1);scene.lockRatio=false;scene.regions=true;commit();draw(true);});}ui.add(card,quick,8);
+        Button precise=ui.button("위치 · 크기 숫자로 조절",false);ui.add(card,precise,8);precise.setOnClickListener(v->numbers(false));
+        Button edit=ui.button("실제 앱 위에서 편집",true);ui.add(page,edit,14);edit.setOnClickListener(v->editOverlay());
+        LinearLayout options=ui.card(page,"안내 표시","편집할 때와 웹서핑할 때를 구분합니다.");
+        toggle(options,"편집 중 바깥을 어둡게","적용 후에는 음영과 조절 도구가 사라집니다.",scene.dim,on->{scene.dim=on;commit();});
+        ui.add(options,ui.text("알림에서 ‘테두리 숨김’을 누르면 선까지 사라져요. 선택한 영역의 실시간 출력은 계속됩니다.",14,Ui.MUTED),10);
     }
-    private void refreshState() {
-        if (state==null) return;
-        if (MirrorService.running) {
-            starting=false;
-            if (awaitingConfig && ((MirrorService.portrait==desiredPortrait&&MirrorService.reversed==reverseSwitch.isChecked()&&MirrorService.fill==fillSwitch.isChecked())||SystemClock.uptimeMillis()>=configDeadline)) awaitingConfig=false;
-            if (!awaitingConfig) {
-                desiredPortrait=MirrorService.portrait; restoringUi=true;
-                reverseSwitch.setChecked(MirrorService.reversed); fillSwitch.setChecked(MirrorService.fill); restoringUi=false;
-            }
-        }
-        Display d=dm.getDisplay(selectedId);
-        boolean available=d!=null,active=MirrorService.running,enabled=available&&!awaitingConsent&&!starting;
-        portraitButton.setEnabled(enabled); landscapeButton.setEnabled(enabled); startButton.setEnabled(enabled&&!active);
-        stopButton.setEnabled(active||starting); picker.setEnabled(!active&&!awaitingConsent&&!starting);
-        startButton.setVisibility(active||starting?View.GONE:View.VISIBLE); stopButton.setVisibility(active||starting?View.VISIBLE:View.GONE);
-        portraitButton.setAlpha(enabled?1f:.45f); landscapeButton.setAlpha(enabled?1f:.45f);
-        renderDirection();
-        if (available) displayLabel.setText(d.getName()); else displayLabel.setText("모니터 연결 대기");
-        if (active) state.setText(awaitingConfig?"화면 방향을 바꾸고 있어요…":"알림에서도 방향을 바로 바꿀 수 있어요.");
-        else if (awaitingConsent) state.setText("화면 공유 안내에서 시작을 눌러 주세요.");
-        else if (starting) state.setText("모니터 화면을 준비하고 있어요…");
-        else if (!available) state.setText("영상 출력 가능한 케이블로 모니터를 연결해 주세요.");
-        else if (idleMessage!=null) state.setText(idleMessage);
-        else if (MirrorService.status.startsWith("화면 복제 실패")) state.setText(MirrorService.status);
-        else state.setText("모니터를 원하는 방향으로 돌린 뒤 시작하세요.");
-        sessionBadge.setText(active?"● 공유 중":starting||awaitingConsent?"준비 중":available?"연결됨":"연결 대기");
-        sessionBadge.setTextColor(active?0xff81e5ca:MUTED); sessionBadge.setBackground(shape(active?0xff183a37:0xff252d40,20));
-        startButton.setText(awaitingConsent?"화면 공유 승인 대기…":"화면 복제 시작");
-        boolean notifications=notificationsEnabled(); notificationSettings.setVisibility(notifications?View.GONE:View.VISIBLE);
-        notificationHint.setText(notifications?"알림창을 내려 세로 · 가로를 누르면\n앱을 열지 않고 바로 전환돼요.":"알림이 꺼져 있어요. 알림 표시를 켜면\n앱 밖에서도 바로 전환할 수 있어요.");
+    private SceneCanvas canvas(boolean dest){SceneCanvas v=new SceneCanvas(this,scene,dest,index->{selected=index;scene.regions=true;commit();});int[] p=phoneSize(),m=monitorSize();v.sourceW=p[0];v.sourceH=p[1];v.outputW=m[0];v.outputH=m[1];v.selected=selected;v.setLayoutParams(new LinearLayout.LayoutParams(-1,ui.dp(dest?280:250)));return v;}
+    private void regionPicker(LinearLayout card){LinearLayout row=ui.row();for(int i=0;i<scene.items.size();i++){final int k=i;Button b=ui.button(String.valueOf((char)('A'+i)),selected==i);b.setContentDescription("영역 "+(char)('A'+i)+(i==selected?", 선택됨":""));ui.weight(row,b);b.setOnClickListener(v->{selected=k;draw(true);});}ui.add(card,row,12);
+        LinearLayout actions=ui.row();Button add=ui.button("영역 추가",false),remove=ui.button("선택 영역 삭제",false);add.setEnabled(scene.items.size()<4);remove.setEnabled(scene.items.size()>1);ui.weight(actions,add);ui.weight(actions,remove);ui.add(card,actions,8);add.setOnClickListener(v->{scene.add();selected=scene.items.size()-1;scene.regions=true;commit();draw(true);});remove.setOnClickListener(v->{scene.remove(selected);selected=Math.min(selected,scene.items.size()-1);commit();draw(true);});}
+    private void layoutPage(){
+        LinearLayout card=ui.card(page,"모니터에 배치","휴대폰에서 고른 영역을 모니터의 원하는 위치에 놓습니다.");
+        LinearLayout modes=ui.row();String[] labels={"위아래","좌우","자유 배치"};for(int i=0;i<3;i++){final int k=i;Button b=ui.button(labels[i],scene.layout==i);ui.weight(modes,b);b.setOnClickListener(v->{scene.layout=k;scene.arrange();scene.regions=true;commit();draw(true);});}ui.add(card,modes,12);
+        ui.add(card,canvas(true),10);ui.add(card,ui.text(scene.layout==2?"영역을 끌어 이동하고 오른쪽 아래 손잡이로 크기를 바꿔요. 겹치면 뒤쪽 알파벳이 위에 표시됩니다.":"위아래·좌우 배치는 같은 크기로 나눕니다. 세부 위치는 자유 배치에서 조절하세요.",13,Ui.MUTED),6);
+        Button topBottom=ui.button("위·아래만 보기 · 가운데 제외",false);ui.add(card,topBottom,10);topBottom.setOnClickListener(v->{scene.items.clear();scene.items.add(new Scene.Region(0,.08f,1,.32f));scene.items.add(new Scene.Region(0,.68f,1,.92f));scene.layout=0;scene.lockRatio=false;scene.regions=true;scene.arrange();selected=0;commit();draw(true);});
+        regionPicker(card);LinearLayout actions=ui.row();Button swap=ui.button("순서 뒤집기",false),numeric=ui.button("배치 수치 조절",false);ui.weight(actions,swap);ui.weight(actions,numeric);ui.add(card,actions,10);swap.setOnClickListener(v->{Collections.reverse(scene.items);selected=0;scene.arrange();commit();draw(true);});numeric.setOnClickListener(v->numbers(true));
+        LinearLayout fit=ui.card(page,"화면 맞춤","글자와 이미지의 원래 비율을 유지합니다.");scaling(fit);presets(page);
     }
-    private void choose(boolean isPortrait) { desiredPortrait=isPortrait; updateOptions(); if (!MirrorService.running) begin(); }
-    private Intent options(String action) { return new Intent(this,MirrorService.class).setAction(action).putExtra("portrait",desiredPortrait).putExtra("reverse",reverseSwitch.isChecked()).putExtra("fill",fillSwitch.isChecked()); }
-    private void updateOptions() {
-        prefs.edit().putBoolean("portrait",desiredPortrait).putBoolean("reverse",reverseSwitch.isChecked()).putBoolean("fill",fillSwitch.isChecked()).apply();
-        if (MirrorService.running) {
-            awaitingConfig=true; configDeadline=SystemClock.uptimeMillis()+1500;
-            startService(options(MirrorService.CONFIG));
-        }
-        renderDirection();
+    private void scaling(LinearLayout parent){String[] names={"전체 보이기 · 여백 허용","꽉 채우기 · 가장자리 잘림","1:1 픽셀 · 확대하지 않음"};for(int i=0;i<3;i++){final int k=i;Button b=ui.button((scene.scaling==i?"✓ ":"")+names[i],scene.scaling==i);ui.add(parent,b,8);b.setOnClickListener(v->{scene.scaling=k;commit();draw(true);});}}
+    private void qualityPage(){
+        LinearLayout q=ui.card(page,"선명도와 부드러움","작은 영역을 크게 확대할수록 원본의 픽셀이 드러날 수 있습니다.");
+        toggle(q,"휴대폰 해상도 유지","켜면 고화질 · 끄면 긴 변 최대 1920px",scene.highQuality,on->{scene.highQuality=on;commit();refresh();});
+        LinearLayout fps=ui.row();Button smooth=ui.button("60fps 목표",scene.fps==60),eco=ui.button("30fps 목표",scene.fps==30);ui.weight(fps,smooth);ui.weight(fps,eco);ui.add(q,fps,12);smooth.setOnClickListener(v->{scene.fps=60;commit();draw(true);});eco.setOnClickListener(v->{scene.fps=30;commit();draw(true);});
+        ui.add(q,ui.text("선명도 보정 · "+Math.round(scene.sharpness*100)+"%",14,Ui.TEXT),14);SeekBar sharp=new SeekBar(this);sharp.setMax(50);sharp.setProgress(Math.round(scene.sharpness*100));sharp.setContentDescription("선명도 보정, 0에서 50퍼센트");ui.add(q,sharp,4);sharp.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar s,int progress,boolean user){if(user)scene.sharpness=progress/100f;}public void onStartTrackingTouch(SeekBar s){}public void onStopTrackingTouch(SeekBar s){commit();draw(true);}});
+        ui.add(q,ui.text("일반 확대 필터와 가장자리 보정입니다. 작은 글자의 원본 디테일을 새로 만드는 AI 복원 기능은 아닙니다.",13,Ui.MUTED),8);
+        LinearLayout detail=ui.card(page,"실제 픽셀과 확대 배율",null);qualityInfo=ui.text("",14,Ui.TEXT);ui.add(detail,qualityInfo,8);
+        LinearLayout fit=ui.card(page,"확대 방식",null);scaling(fit);
+        ui.add(page,ui.text("S20의 WQHD+ 설정은 원본 픽셀 확보에 도움이 될 수 있지만 120Hz와 함께 사용할 수 없습니다. 발열이나 지연이 크면 30fps 또는 성능 모드를 선택하세요.",13,Ui.MUTED),14);
     }
-    private void begin() {
-        if (awaitingConsent||starting||MirrorService.running) return;
-        idleMessage=null;
-        Display d=dm.getDisplay(selectedId); if (d==null) { dialog("영상 출력 가능한 케이블로 모니터를 연결해 주세요."); return; }
-        if (Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},203); return;
-        }
-        requestCapture();
-    }
-    @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results) {
-        super.onRequestPermissionsResult(code,permissions,results);
-        if (code==203) requestCapture();
-    }
-    private void requestCapture() {
-        Display d=dm.getDisplay(selectedId); if (d==null||awaitingConsent) return;
-        consentDisplay=selectedId;
-        MediaProjectionManager manager=(MediaProjectionManager)getSystemService(MEDIA_PROJECTION_SERVICE);
-        Intent intent=Build.VERSION.SDK_INT>=34?manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay()):manager.createScreenCaptureIntent();
-        awaitingConsent=true; refreshState(); startActivityForResult(intent,204);
-    }
-    @Override protected void onActivityResult(int request,int result,Intent data) {
-        super.onActivityResult(request,result,data);
-        if (request!=204) return; awaitingConsent=false;
-        if (result!=RESULT_OK||data==null) { idleMessage="화면 공유를 취소했어요. 다시 시작할 수 있어요."; refreshState(); return; }
-        Display external=dm.getDisplay(consentDisplay);
-        if (external==null) { dialog("승인 중 모니터 연결이 해제되었습니다. 다시 연결해 주세요."); refreshDisplays(); return; }
-        try {
-            starting=true; MirrorService.status="모니터 화면을 준비하고 있습니다…";
-            startForegroundService(options(MirrorService.START).putExtra("display",consentDisplay).putExtra("result",result).putExtra("grant",data));
-            ui.postDelayed(()->{ if (starting&&!MirrorService.running) { starting=false; state.setText(MirrorService.status); refreshState(); } },10000);
-            refreshState();
-        } catch (Exception e) { starting=false; dialog("화면 복제 시작 실패: "+e.getMessage()); refreshState(); }
-    }
-    private void stop() { stopService(new Intent(this,MirrorService.class)); starting=false; awaitingConfig=false; idleMessage="종료했어요. 기본 미러링으로 돌아갑니다."; MirrorService.status=idleMessage; ui.postDelayed(this::refreshState,250); }
-    private boolean notificationsEnabled() {
-        NotificationManager manager=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
-        NotificationChannel channel=manager.getNotificationChannel("mirror");
-        return manager.areNotificationsEnabled()&&(channel==null||channel.getImportance()!=NotificationManager.IMPORTANCE_NONE);
-    }
-    private void openNotificationSettings() {
-        try { startActivity(new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,getPackageName()).putExtra(Settings.EXTRA_CHANNEL_ID,"mirror")); }
-        catch (Exception e) { startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,getPackageName())); }
-    }
-    private void more() {
-        new AlertDialog.Builder(this).setTitle("더 보기").setItems(new String[]{"사용 방법","알림 표시 설정","고급: 시스템 회전 방식"},(dialog,which)->{
-            if (which==0) help();
-            else if (which==1) openNotificationSettings();
-            else if (MirrorService.running||starting) dialog("화면 복제를 먼저 종료해 주세요.");
-            else startActivity(new Intent(this,MainActivity.class));
-        }).setNegativeButton("닫기",null).show();
-    }
-    private void renderDirection() {
-        if (portraitButton==null) return;
-        styleDirection(portraitButton,desiredPortrait,true); styleDirection(landscapeButton,!desiredPortrait,false);
-        directionLabel.setText((desiredPortrait?"세로":"가로")+" · "+(MirrorService.running?"출력 중":"선택됨"));
-        monitorPreview.invalidate();
-    }
-    private void styleDirection(Button b,boolean selected,boolean vertical) {
-        if (Boolean.valueOf(selected).equals(b.getTag())) return;
-        b.setTag(selected); b.setSelected(selected); b.setStateDescription(selected?"선택됨":"선택 안 됨");
-        String label=(vertical?"세로":"가로")+"\n"+(selected?"✓ 선택됨":vertical?"세워서 보기":"눕혀서 보기");
-        SpannableString title=new SpannableString(label); title.setSpan(new AbsoluteSizeSpan(22,true),0,2,Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        title.setSpan(new AbsoluteSizeSpan(12,true),3,label.length(),Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        b.setText(title); b.setTextColor(selected?0xff17132c:MUTED);
-        GradientDrawable bg=shape(selected?ACCENT:0xff1b2334,18);
-        if (!selected) bg.setStroke(dp(1),0xff333d53);
-        b.setBackground(new RippleDrawable(ColorStateList.valueOf(selected?0x2817132c:0x30b4a4ff),bg,null));
-    }
-    private Switch setting(LinearLayout parent,String title,String subtitle,boolean checked) {
-        LinearLayout row=new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setMinimumHeight(dp(50)); parent.addView(row);
-        LinearLayout labels=column(); row.addView(labels,new LinearLayout.LayoutParams(0,-2,1));
-        TextView heading=text(title,14,TEXT); heading.setTypeface(null,Typeface.BOLD); labels.addView(heading); add(labels,text(subtitle,12,MUTED),3,0);
-        Switch toggle=new Switch(this); toggle.setShowText(false); toggle.setMinHeight(dp(48)); toggle.setChecked(checked); toggle.setContentDescription(title+". "+subtitle);
-        toggle.setThumbTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{ACCENT,0xff9da9bf}));
-        toggle.setTrackTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{0xff534b7a,0xff343e52}));
-        row.addView(toggle); row.setOnClickListener(v->toggle.setChecked(!toggle.isChecked())); return toggle;
-    }
-    private void help() {
-        new AlertDialog.Builder(this).setTitle("S20 화면 복제용 사용 방법")
-            .setMessage("1. DeX를 켜지 않은 상태에서 영상 출력 지원 USB-C 케이블로 모니터를 연결합니다.\n\n2. 모니터 본체를 세로 또는 가로로 돌리고, 같은 방향의 버튼을 누릅니다.\n\n3. Android의 화면 공유 안내에서 ‘시작’을 허용합니다. 전체 화면을 공유하면 앱을 바꿔도 모니터에 표시됩니다.\n\n4. 휴대폰 홈으로 나가 유튜브나 원하는 앱을 엽니다. 알림에서 방향을 바꾸거나 종료할 수 있습니다.\n\n• 방향이 거꾸로면 ‘반대 방향으로 회전’을 켜세요.\n• ‘화면 꽉 채우기’는 화면 비율을 유지하며 가장자리를 잘라 빈 공간을 줄입니다. 휴대폰과 모니터의 비율이 다르면 여백이나 잘림이 생깁니다.\n• 보호된 영상과 보안 화면은 검게 표시될 수 있습니다. 소리는 휴대폰의 현재 출력 경로를 사용합니다.\n• 화면을 저장하거나 인터넷으로 보내지 않습니다. 알림과 개인정보도 전체 화면 공유에 포함될 수 있습니다.\n• 목록에 모니터가 없거나 검은 화면만 나오면 이 연결 방식에서 별도 화면 출력을 지원하지 않을 수 있습니다.\n• 종료하면 회전 출력이 사라지고 기존 미러링으로 돌아갑니다.")
-            .setPositiveButton("확인",null).show();
-    }
-    private void dialog(String message) { if (!isFinishing()) new AlertDialog.Builder(this).setTitle("확인이 필요해요").setMessage(message).setPositiveButton("확인",null).show(); }
-    private int dp(int v) { return Math.round(v*getResources().getDisplayMetrics().density); }
-    private LinearLayout column() { LinearLayout c=new LinearLayout(this); c.setOrientation(LinearLayout.VERTICAL); return c; }
-    private LinearLayout card() { LinearLayout c=column(); c.setPadding(dp(18),dp(16),dp(18),dp(16)); c.setBackground(shape(CARD,20)); return c; }
-    private GradientDrawable shape(int color,int radius) { GradientDrawable s=new GradientDrawable(); s.setColor(color); s.setCornerRadius(dp(radius)); return s; }
-    private TextView text(String content,int size,int color) { TextView t=new TextView(this); t.setText(content); t.setTextSize(size); t.setTextColor(color); t.setLineSpacing(dp(3),1); return t; }
-    private Button button(String label,boolean primary) { Button b=new Button(this); b.setText(label); b.setTextSize(14); b.setAllCaps(false); b.setMinHeight(dp(50)); b.setTextColor(primary?BG:ACCENT); b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x30ffffff),shape(primary?ACCENT:0xff252d40,14),null)); return b; }
-    private void add(LinearLayout parent,View child,int top,int bottom) { LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2); p.topMargin=dp(top); p.bottomMargin=dp(bottom); parent.addView(child,p); }
-    private class MonitorPreview extends View {
-        private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
-        MonitorPreview() { super(MirrorActivity.this); setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); }
-        @Override protected void onDraw(Canvas c) {
-            float w=dp(desiredPortrait?54:112),h=dp(desiredPortrait?82:66),x=(getWidth()-w)/2,y=dp(12);
-            paint.setColor(0xff252e45); paint.setStyle(Paint.Style.FILL); c.drawRoundRect(new RectF(x,y,x+w,y+h),dp(8),dp(8),paint);
-            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(dp(2)); paint.setColor(ACCENT); c.drawRoundRect(new RectF(x,y,x+w,y+h),dp(8),dp(8),paint); paint.setStyle(Paint.Style.FILL);
-            c.save(); if (reverseSwitch!=null&&reverseSwitch.isChecked()) c.rotate(180,x+w/2,y+h/2);
-            paint.setColor(0xff81e5ca); c.drawRoundRect(new RectF(x+w*.24f,y+h*.25f,x+w*.76f,y+h*.48f),dp(3),dp(3),paint);
-            paint.setColor(0xff737899); c.drawRoundRect(new RectF(x+w*.24f,y+h*.59f,x+w*.76f,y+h*.63f),dp(1),dp(1),paint);
-            c.drawRoundRect(new RectF(x+w*.24f,y+h*.70f,x+w*.60f,y+h*.74f),dp(1),dp(1),paint); c.restore();
-            paint.setColor(0xff7a729d); c.drawRoundRect(new RectF(x+w/2-dp(2),y+h,x+w/2+dp(2),y+h+dp(8)),dp(1),dp(1),paint);
-            c.drawRoundRect(new RectF(x+w/2-dp(17),y+h+dp(8),x+w/2+dp(17),y+h+dp(10)),dp(2),dp(2),paint);
-        }
-    }
+    interface Toggle{void set(boolean value);}
+    private void toggle(LinearLayout p,String title,String desc,boolean on,Toggle cb){LinearLayout row=ui.row();LinearLayout labels=ui.column();labels.addView(ui.text(title,15,Ui.TEXT));ui.add(labels,ui.text(desc,13,Ui.MUTED),4);row.addView(labels,new LinearLayout.LayoutParams(0,-2,1));Switch s=new Switch(this);s.setChecked(on);s.setMinHeight(ui.dp(52));s.setContentDescription(title+". "+desc);row.addView(s);s.setOnCheckedChangeListener((v,b)->cb.set(b));row.setOnClickListener(v->s.setChecked(!s.isChecked()));ui.add(p,row,14);}
+    private void presets(LinearLayout parent){LinearLayout p=ui.card(parent,"설정 저장","영역·배치·방향·화질을 함께 기억합니다.");LinearLayout r=ui.row();Button save=ui.button("현재 설정 저장",false),load=ui.button("불러오기",false);ui.weight(r,save);ui.weight(r,load);ui.add(p,r,12);save.setOnClickListener(v->{EditText name=new EditText(this);name.setSingleLine(true);name.setHint("예: 세로 웹서핑");name.setPadding(ui.dp(20),ui.dp(12),ui.dp(20),ui.dp(12));AlertDialog d=new AlertDialog.Builder(this).setTitle("설정 이름").setView(name).setPositiveButton("저장",null).setNegativeButton("취소",null).create();d.setOnShowListener(x->d.getButton(-1).setOnClickListener(y->{String text=name.getText().toString().trim();if(text.isEmpty()){name.setError("이름을 입력하세요.");return;}if(text.length()>40){name.setError("40자 이내로 입력하세요.");return;}if(store.names().contains(text)){new AlertDialog.Builder(this).setMessage("같은 이름의 설정을 덮어쓸까요?").setPositiveButton("덮어쓰기",(a,b)->{store.preset(text,scene);d.dismiss();}).setNegativeButton("취소",null).show();}else{store.preset(text,scene);d.dismiss();toast("설정을 저장했습니다.");}}));d.show();});load.setOnClickListener(v->{ArrayList<String> n=store.names();if(n.isEmpty()){message("아직 저장한 설정이 없습니다.");return;}new AlertDialog.Builder(this).setTitle("저장한 설정").setItems(n.toArray(new String[0]),(d,i)->new AlertDialog.Builder(this).setTitle(n.get(i)).setItems(new String[]{"불러오기","삭제"},(a,k)->{if(k==0){scene=store.preset(n.get(i));selected=0;commit();draw(true);}else store.delete(n.get(i));}).setNegativeButton("취소",null).show()).setNegativeButton("닫기",null).show();});}
+    private void numbers(boolean dest){Scene.Box box=dest?scene.items.get(selected).dest:scene.items.get(selected).source;LinearLayout form=ui.column();form.setPadding(ui.dp(20),ui.dp(8),ui.dp(20),0);String[] labels={"왼쪽 위치 (%)","위쪽 위치 (%)","너비 (%)","높이 (%)"};float[] vals={box.l,box.t,box.w(),box.h()};EditText[] fields=new EditText[4];for(int i=0;i<4;i++){ui.add(form,ui.text(labels[i],14,Ui.MUTED),8);EditText input=new EditText(this);input.setText(String.format(Locale.US,"%.1f",vals[i]*100));input.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL);input.setSelectAllOnFocus(true);form.addView(input);fields[i]=input;}
+        ScrollView sc=new ScrollView(this);sc.addView(form);AlertDialog d=new AlertDialog.Builder(this).setTitle((dest?"배치 ":"영역 ")+(char)('A'+selected)).setView(sc).setPositiveButton("적용",null).setNegativeButton("취소",null).create();d.setOnShowListener(v->d.getButton(-1).setOnClickListener(b->{try{float l=Float.parseFloat(fields[0].getText().toString())/100,t=Float.parseFloat(fields[1].getText().toString())/100,w=Float.parseFloat(fields[2].getText().toString())/100,h=Float.parseFloat(fields[3].getText().toString())/100;if(!Float.isFinite(l+t+w+h)||l<0||t<0||w<.03f||h<.03f||l+w>1.0001f||t+h>1.0001f)throw new IllegalArgumentException();Scene.Box next=new Scene.Box(l,t,l+w,t+h);if(dest){scene.layout=2;scene.items.get(selected).dest=next;}else{scene.items.get(selected).source=next;scene.lockRatio=false;}scene.regions=true;commit();d.dismiss();draw(true);}catch(Exception e){fields[2].setError("위치+크기는 100% 이내, 크기는 3% 이상이어야 합니다.");}}));d.show();}
+    private void commit(){if(scene.lockRatio){int[] p=phoneSize(),m=monitorSize();scene.matchMonitor(p[0],p[1],m[0],m[1]);}store.save(scene);drawn=SceneStore.encode(scene);if(MirrorService.running)startService(new Intent(this,MirrorService.class).setAction(MirrorService.CONFIG));}
+    private void send(String action){if(!MirrorService.running){message("모니터를 연결하고 화면 공유를 먼저 시작해 주세요.");return;}startService(new Intent(this,MirrorService.class).setAction(action));handler.postDelayed(this::refresh,180);}
+    private void editOverlay(){if(!MirrorService.running){message("출력 탭에서 화면 공유를 먼저 시작해 주세요. 그다음 원하는 앱을 열고 알림의 ‘테두리 편집’을 누르면 편리합니다.");return;}if(!Settings.canDrawOverlays(this)){overlayPermission();return;}moveTaskToBack(true);handler.postDelayed(()->send(MirrorService.EDIT),300);}
+    private void overlayPermission(){new AlertDialog.Builder(this).setTitle("다른 앱 위에 테두리 표시").setMessage("브라우저 위에 파란 테두리를 띄우려면 ‘다른 앱 위에 표시’를 허용해 주세요. 적용 후에는 터치와 스크롤이 원래 앱에 전달됩니다.").setPositiveButton("설정 열기",(d,w)->startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:"+getPackageName())))).setNegativeButton("나중에",null).show();}
+    private int[] phoneSize(){if(MirrorService.running)return new int[]{MirrorService.phoneW,MirrorService.phoneH};Point p=new Point();dm.getDisplay(0).getRealSize(p);return new int[]{p.x,p.y};}
+    private int[] monitorSize(){Display d=dm.getDisplay(displayId);return d==null?new int[]{1920,1080}:new int[]{d.getMode().getPhysicalWidth(),d.getMode().getPhysicalHeight()};}
+    private int gcd(int a,int b){while(b!=0){int t=b;b=a%b;a=t;}return a;}
+    private void refresh(){if(state==null)return;chooseDisplay();if(starting&&MirrorService.running)starting=false;if(starting&&SystemClock.uptimeMillis()-startAt>12000)starting=false;boolean active=MirrorService.running;Ui.update(state,awaiting?"Android 화면 공유 안내에서 시작을 허용하세요.":starting?"외부 화면을 준비하고 있습니다…":active?(MirrorService.needsRegion?"● 휴대폰 방향 변경 · 테두리를 다시 지정하세요.":MirrorService.editing?"● 테두리 편집 중":MirrorService.paused?"● 일시정지":scene.regions?"● "+scene.items.size()+"개 영역 실시간 출력 중":"● 전체 화면 실시간 출력 중"):MirrorService.status);
+        Display d=dm.getDisplay(displayId);int[] m=monitorSize(),c=scene.canvas(m[0],m[1]);int g=gcd(c[0],c[1]);if(monitorInfo!=null)Ui.update(monitorInfo,d==null?"연결된 모니터가 없습니다.\n영상 출력이 가능한 케이블을 연결하세요.":d.getName()+"\n"+m[0]+" × "+m[1]+" · "+Math.round(d.getMode().getRefreshRate())+"Hz\n"+(scene.portrait?"세로":"가로")+" 배치 "+c[0]+" × "+c[1]+" · "+c[0]/g+":"+c[1]/g);
+        if(portraitButton!=null){int shortSide=Math.min(m[0],m[1]),longSide=Math.max(m[0],m[1]);Ui.update(portraitButton,"세로\n"+(scene.portrait?"✓ 선택됨":d==null?"선택":shortSide/g+":"+longSide/g));Ui.update(landscapeButton,"가로\n"+(!scene.portrait?"✓ 선택됨":d==null?"선택":longSide/g+":"+shortSide/g));}
+        if(start!=null){Ui.update(start,active||starting?"화면 공유 종료":awaiting?"공유 승인 대기…":"화면 공유 시작");start.setEnabled(!awaiting&&(d!=null||active));ui.style(start,!active);}
+        if(guideButton!=null){Ui.update(guideButton,MirrorService.guides?"테두리 숨기기":"테두리 표시");guideButton.setEnabled(active);Ui.update(pauseButton,MirrorService.paused?"출력 재개":"일시정지");pauseButton.setEnabled(active);}
+        if(qualityInfo!=null){int[] p=phoneSize(),sz=active?new int[]{MirrorService.captureW,MirrorService.captureH}:Scene.captureSize(p[0],p[1],scene.highQuality);int ow=active&&MirrorService.renderW>0?MirrorService.renderW:m[0],oh=active&&MirrorService.renderH>0?MirrorService.renderH:m[1];int[] canvas=scene.canvas(ow,oh);StringBuilder text=new StringBuilder(active?"현재 입력 ":"예상 입력 ");text.append(sz[0]).append(" × ").append(sz[1]).append("\n모니터 신호 ").append(m[0]).append(" × ").append(m[1]).append("\n").append(active?"실제 그리기 ":"예상 그리기 ").append(ow).append(" × ").append(oh);ArrayList<Scene.Region> list=scene.items;if(!scene.regions){list=new ArrayList<>();list.add(new Scene.Region(0,0,1,1));}for(int i=0;i<list.size();i++){Scene.Region r=list.get(i);float[] a=Scene.placement(r.source,r.dest,sz[0],sz[1],canvas[0],canvas[1],scene.scaling);text.append("\n\n").append(scene.regions?"영역 "+(char)('A'+i):"전체 화면").append(" · ").append(Math.round(r.source.w()*sz[0])).append(" × ").append(Math.round(r.source.h()*sz[1])).append("\n표시 ").append(Math.round(a[6])).append(" × ").append(Math.round(a[7])).append(" · ").append(String.format(Locale.KOREA,"%.2f배",a[8]));if(a[8]>1.5)text.append("\n작은 글자가 흐려질 수 있어요.");}Ui.update(qualityInfo,text.toString());}}
+    private void begin(){if(awaiting||starting)return;chooseDisplay();if(displayId<0){message("영상 출력 가능한 케이블로 모니터를 연결해 주세요.");return;}if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},12);return;}launchConsent();}
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==12){if(results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED)launchConsent();else message("알림을 허용하면 다른 앱을 사용하면서 방향과 테두리를 조절할 수 있습니다. 도움말의 알림 설정에서 켜 주세요.");}}
+    private void launchConsent(){consentDisplay=displayId;MediaProjectionManager manager=(MediaProjectionManager)getSystemService(MEDIA_PROJECTION_SERVICE);Intent i=Build.VERSION.SDK_INT>=34?manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay()):manager.createScreenCaptureIntent();awaiting=true;refresh();startActivityForResult(i,204);}
+    @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(request!=204)return;awaiting=false;if(result!=RESULT_OK||data==null){MirrorService.status="화면 공유를 취소했습니다.";refresh();return;}if(dm.getDisplay(consentDisplay)==null){message("모니터 연결이 해제되었습니다.");return;}try{store.save(scene);starting=true;startAt=SystemClock.uptimeMillis();startForegroundService(new Intent(this,MirrorService.class).setAction(MirrorService.START).putExtra("display",consentDisplay).putExtra("result",result).putExtra("grant",data));refresh();}catch(Exception e){starting=false;message("화면 공유를 시작하지 못했습니다: "+e.getMessage());}}
+    private void monitorDialog(){ArrayList<Display> all=new ArrayList<>();ArrayList<String> labels=new ArrayList<>();for(Display d:dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION))if(d.getDisplayId()!=0&&(d.getFlags()&Display.FLAG_PRIVATE)==0){all.add(d);labels.add(d.getName()+" · "+d.getMode().getPhysicalWidth()+" × "+d.getMode().getPhysicalHeight());}if(all.isEmpty()){message("연결된 외부 모니터가 없습니다.");return;}new AlertDialog.Builder(this).setTitle("연결된 모니터").setItems(labels.toArray(new String[0]),(dialog,index)->{Display d=all.get(index);if(!MirrorService.running)displayId=d.getDisplayId();StringBuilder text=new StringBuilder("현재 신호: "+d.getMode().getPhysicalWidth()+" × "+d.getMode().getPhysicalHeight()+"\n\n기기가 보고한 지원 모드\n");for(Display.Mode mode:d.getSupportedModes())text.append(mode.getPhysicalWidth()).append(" × ").append(mode.getPhysicalHeight()).append(" · ").append(Math.round(mode.getRefreshRate())).append("Hz\n");text.append("\n모니터의 인치 크기나 실제 세워 둔 방향은 자동 감지하지 않습니다. 신호 해상도와 앱의 출력 크기는 다를 수 있습니다.");message(text.toString());refresh();}).setNegativeButton("닫기",null).show();}
+    private void more(){new AlertDialog.Builder(this).setTitle("모니터 피벗 2.0").setItems(new String[]{"사용 방법","테두리 표시 권한","알림 설정","고급 시스템 회전"},(d,n)->{if(n==0)message("1. 모니터를 연결하고 화면 공유를 시작하세요.\n\n2. 브라우저 등 원하는 앱을 연 뒤 알림창을 펼쳐 ‘테두리 편집’을 누르세요.\n\n3. 테두리를 끌어 영역을 정하고 적용하세요. 파란 선만 남고 웹서핑을 계속할 수 있습니다.\n\n4. 여러 부분을 조합하려면 영역을 추가하고 배치 탭에서 위치를 정하세요.\n\n편집 중에는 모니터의 마지막 화면을 유지합니다. 적용 후 실시간 출력으로 돌아갑니다. 화면에 보이지 않는 페이지나 앱을 별도로 출력하는 기능은 아닙니다.\n\n보안 화면·DRM 영상은 검게 보일 수 있습니다. 알림·키보드가 영역 안에 들어오면 출력될 수 있습니다. 화면은 파일로 저장하거나 서버로 보내지 않습니다. 소리는 휴대폰의 현재 출력 경로를 사용합니다.");else if(n==1)overlayPermission();else if(n==2)startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,getPackageName()));else if(MirrorService.running)message("화면 공유를 먼저 종료해 주세요.");else startActivity(new Intent(this,MainActivity.class));}).setNegativeButton("닫기",null).show();}
+    private void message(String text){if(!isFinishing())new AlertDialog.Builder(this).setTitle("모니터 피벗").setMessage(text).setPositiveButton("확인",null).show();}
+    private void toast(String text){Toast.makeText(this,text,Toast.LENGTH_SHORT).show();}
 }

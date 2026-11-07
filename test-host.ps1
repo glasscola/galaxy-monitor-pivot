@@ -6,9 +6,12 @@ $sources=(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'tests') -Filter '
 $sources+=Join-Path $PSScriptRoot 'app/src/main/java/com/pivotcontrol/app/PivotService.java'
 $sources+=Join-Path $PSScriptRoot 'app/src/main/java/com/pivotcontrol/app/RotationPolicy.java'
 $sources+=Join-Path $PSScriptRoot 'app/src/main/java/com/pivotcontrol/app/MirrorGeometry.java'
+$sources+=Join-Path $PSScriptRoot 'app/src/main/java/com/pivotcontrol/app/Scene.java'
 & javac -encoding UTF-8 --release 8 -d $BuildPath @sources
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed' }
 & java -cp $BuildPath com.pivotcontrol.app.PivotServiceTest
 if ($LASTEXITCODE -ne 0) { throw 'Host tests failed' }
 & java -cp $BuildPath com.pivotcontrol.app.MirrorGeometryTest
 if ($LASTEXITCODE -ne 0) { throw 'Mirror geometry tests failed' }
+& java -cp $BuildPath com.pivotcontrol.app.SceneTest
+if ($LASTEXITCODE -ne 0) { throw 'Scene geometry tests failed' }
