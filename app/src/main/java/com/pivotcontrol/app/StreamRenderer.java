@@ -4,6 +4,7 @@ import android.graphics.SurfaceTexture;
 import android.opengl.*;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Surface;
 import java.nio.*;
 import javax.microedition.khronos.egl.EGLConfig;
@@ -16,12 +17,46 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
     private SurfaceTexture input;private Surface surface;private int program,tex,position,uv,matrixLoc,stepLoc,sharpLoc,boundsLoc;
     private int width,height,sourceW,sourceH,framebuffer,compositeTexture,copyProgram,copyPosition,copyUv;private boolean hasComposite;private final float[] transform=new float[16];
     private final FloatBuffer vertices=ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder()).asFloatBuffer(),coords=ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder()).asFloatBuffer();
-    private volatile Scene scene=new Scene();private volatile boolean paused,closed;private boolean fresh,hasFrame;private long lastFrame;
+    private volatile Scene scene=new Scene();
+    private volatile boolean paused,covered,closed;
+    private boolean fresh,hasFrame,renderScheduled;
+    private int bufferWidth,bufferHeight,framesInSample;
+    private long lastFrame,sampleStart;
+    private volatile FrameRate frameRate;
+    private final Runnable drawInput=()->{
+        synchronized(this){renderScheduled=false;}
+        if(!closed&&!paused&&!covered)requestRender();
+    };
+
+    private static final class FrameRate {
+        final int frames;
+        final long sampledAt;
+        FrameRate(int frames,long sampledAt){this.frames=frames;this.sampledAt=sampledAt;}
+    }
     StreamRenderer(Context c,int w,int h,Ready r){super(c);sourceW=w;sourceH=h;listener=r;setEGLContextClientVersion(2);setPreserveEGLContextOnPause(true);setRenderer(this);setRenderMode(RENDERMODE_WHEN_DIRTY);}
     void configure(Scene s){scene=s.copy();requestRender();}
     void pauseStream(boolean pause){paused=pause;requestRender();}
+    void coverStream(boolean cover){covered=cover;requestRender();}
+    int outputFps(){
+        FrameRate sample=frameRate;
+        return sample==null||SystemClock.uptimeMillis()-sample.sampledAt>=1200?0:sample.frames;
+    }
+
+    private void scheduleInput(){
+        if(closed||paused||covered||renderScheduled)return;
+        long wait=lastFrame+1_000_000_000L/scene.fps-System.nanoTime();
+        renderScheduled=true;
+        main.postDelayed(drawInput,Math.max(0,(wait+999_999)/1_000_000));
+    }
     void resizeSource(int w,int h){queueEvent(()->{sourceW=w;sourceH=h;if(input!=null)input.setDefaultBufferSize(w,h);});}
     @Override public void onSurfaceCreated(GL10 unused,EGLConfig config){try{
+        if(closed)return;
+        // The previous EGL context owned these names. Never use them in the new context.
+        releaseInput();
+        framebuffer=0;compositeTexture=0;bufferWidth=0;bufferHeight=0;
+        hasComposite=false;hasFrame=false;
+        synchronized(this){fresh=false;lastFrame=0;}
+        resetRate();
         int[] names=new int[1];GLES20.glGenTextures(1,names,0);tex=names[0];GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,tex);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR);GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR);GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE);GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE);
         // Keep texture coordinates precise at native phone resolutions. ES 2.0
@@ -33,22 +68,109 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
         program=GLES20.glCreateProgram();GLES20.glAttachShader(program,shader(GLES20.GL_VERTEX_SHADER,vs));GLES20.glAttachShader(program,shader(GLES20.GL_FRAGMENT_SHADER,fs));GLES20.glLinkProgram(program);int[] ok=new int[1];GLES20.glGetProgramiv(program,GLES20.GL_LINK_STATUS,ok,0);if(ok[0]==0)throw new IllegalStateException(GLES20.glGetProgramInfoLog(program));
         position=GLES20.glGetAttribLocation(program,"p");uv=GLES20.glGetAttribLocation(program,"uv");matrixLoc=GLES20.glGetUniformLocation(program,"m");stepLoc=GLES20.glGetUniformLocation(program,"stepSize");sharpLoc=GLES20.glGetUniformLocation(program,"sharp");boundsLoc=GLES20.glGetUniformLocation(program,"bounds");
         copyProgram=GLES20.glCreateProgram();GLES20.glAttachShader(copyProgram,shader(GLES20.GL_VERTEX_SHADER,"attribute vec2 p;attribute vec2 uv;"+varying+"void main(){gl_Position=vec4(p,0.,1.);v=uv;}"));GLES20.glAttachShader(copyProgram,shader(GLES20.GL_FRAGMENT_SHADER,"precision "+fp+" float;uniform sampler2D image;"+varying+"void main(){gl_FragColor=texture2D(image,v);}"));GLES20.glLinkProgram(copyProgram);GLES20.glGetProgramiv(copyProgram,GLES20.GL_LINK_STATUS,ok,0);if(ok[0]==0)throw new IllegalStateException(GLES20.glGetProgramInfoLog(copyProgram));copyPosition=GLES20.glGetAttribLocation(copyProgram,"p");copyUv=GLES20.glGetAttribLocation(copyProgram,"uv");
-        input=new SurfaceTexture(tex);input.setDefaultBufferSize(sourceW,sourceH);input.setOnFrameAvailableListener(st->{synchronized(this){fresh=true;}requestRender();});surface=new Surface(input);main.post(()->{if(!closed)listener.ready(surface);});
+        input=new SurfaceTexture(tex);
+        input.setDefaultBufferSize(sourceW,sourceH);
+        input.setOnFrameAvailableListener(st->{
+            synchronized(this){
+                if(closed||st!=input)return;
+                fresh=true;
+                scheduleInput();
+            }
+        },main);
+        Surface next=new Surface(input);
+        surface=next;
+        main.post(()->{if(!closed&&surface==next)listener.ready(next);});
     }catch(Exception e){main.post(()->listener.error(e.toString()));}}
     private int shader(int type,String code){int s=GLES20.glCreateShader(type);GLES20.glShaderSource(s,code);GLES20.glCompileShader(s);int[] ok=new int[1];GLES20.glGetShaderiv(s,GLES20.GL_COMPILE_STATUS,ok,0);if(ok[0]==0)throw new IllegalStateException(GLES20.glGetShaderInfoLog(s));return s;}
-    @Override public void onSurfaceChanged(GL10 g,int w,int h){width=w;height=h;GLES20.glViewport(0,0,w,h);if(framebuffer!=0)GLES20.glDeleteFramebuffers(1,new int[]{framebuffer},0);if(compositeTexture!=0)GLES20.glDeleteTextures(1,new int[]{compositeTexture},0);int[] id=new int[1];GLES20.glGenTextures(1,id,0);compositeTexture=id[0];GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,compositeTexture);GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_NEAREST);GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_NEAREST);GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE);GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE);GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,w,h,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,null);GLES20.glGenFramebuffers(1,id,0);framebuffer=id[0];GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,framebuffer);GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER,GLES20.GL_COLOR_ATTACHMENT0,GLES20.GL_TEXTURE_2D,compositeTexture,0);if(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER)!=GLES20.GL_FRAMEBUFFER_COMPLETE)main.post(()->listener.error("외부 화면 버퍼를 만들 수 없습니다."));GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);hasComposite=false;}
-    @Override public void onDrawFrame(GL10 unused){
-        if(closed||input==null||width==0)return;Scene s=scene;long now=System.nanoTime();
-        synchronized(this){if(fresh){long wait=1_000_000_000L/s.fps-(now-lastFrame);if(wait<=0||!hasFrame){input.updateTexImage();input.getTransformMatrix(transform);fresh=false;hasFrame=true;lastFrame=now;}else main.postDelayed(this::requestRender,Math.max(1,wait/1_000_000));}}
-        // Drain the input even while editing, but retain the last clean composite on GPU.
-        if(paused&&hasComposite){present();return;}
+    @Override public void onSurfaceChanged(GL10 g,int w,int h){
+        width=w;height=h;
+        GLES20.glViewport(0,0,w,h);
+    }
+
+    private boolean prepareBuffer(){
+        if(bufferWidth==width&&bufferHeight==height)return true;
+        if(framebuffer!=0)GLES20.glDeleteFramebuffers(1,new int[]{framebuffer},0);
+        if(compositeTexture!=0)GLES20.glDeleteTextures(1,new int[]{compositeTexture},0);
+        hasComposite=false;
+        int[] id=new int[1];
+        GLES20.glGenTextures(1,id,0);
+        compositeTexture=id[0];
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,compositeTexture);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,width,height,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,null);
+        GLES20.glGenFramebuffers(1,id,0);
+        framebuffer=id[0];
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,framebuffer);
-        GLES20.glClearColor(.015f,.02f,.035f,1);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);if(!hasFrame){present();return;}
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER,GLES20.GL_COLOR_ATTACHMENT0,GLES20.GL_TEXTURE_2D,compositeTexture,0);
+        boolean complete=GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER)==GLES20.GL_FRAMEBUFFER_COMPLETE;
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);
+        if(!complete){
+            main.post(()->listener.error("외부 화면 버퍼를 만들 수 없습니다."));
+            return false;
+        }
+        bufferWidth=width;bufferHeight=height;
+        return true;
+    }
+    @Override public void onDrawFrame(GL10 unused){
+        if(closed||width<=0||height<=0)return;
+        // Never compose a new phone frame while paused, even if EGL discarded the old texture.
+        if(covered||paused){
+            resetRate();
+            if(!covered&&hasComposite)presentFrozen();else clearOutput();
+            return;
+        }
+        if(input==null){clearOutput();return;}
+        Scene s=scene;
+        long now=System.nanoTime();
+        boolean newFrame=false;
+        synchronized(this){
+            if(fresh&&(!hasFrame||now-lastFrame>=1_000_000_000L/s.fps)){
+                input.updateTexImage();
+                input.getTransformMatrix(transform);
+                fresh=false;hasFrame=true;lastFrame=now;newFrame=true;
+            }else if(fresh)scheduleInput();
+        }
+        if(!hasFrame||!prepareBuffer()){clearOutput();return;}
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,framebuffer);
+        GLES20.glClearColor(.015f,.02f,.035f,1);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
         GLES20.glUseProgram(program);GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,tex);GLES20.glUniformMatrix4fv(matrixLoc,1,false,transform,0);GLES20.glUniform2f(stepLoc,1f/sourceW,1f/sourceH);GLES20.glUniform1f(sharpLoc,s.sharpness);
         int[] canvas=s.canvas(width,height);int angle=MirrorGeometry.angle(width,height,s.portrait,s.reverse);
         if(!s.regions)draw(new Scene.Box(0,0,1,1),new Scene.Box(0,0,1,1),s,canvas,angle);
         else for(Scene.Region region:s.items)draw(region.source,region.dest,s,canvas,angle);
         hasComposite=true;present();
+        if(newFrame)recordFrame();
+    }
+    private void clearOutput(){
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);
+        GLES20.glClearColor(0,0,0,1);
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+    }
+    private void presentFrozen(){
+        if(bufferWidth==width&&bufferHeight==height){present();return;}
+        clearOutput();
+        float scale=Math.min(width/(float)bufferWidth,height/(float)bufferHeight);
+        int fittedWidth=Math.round(bufferWidth*scale);
+        int fittedHeight=Math.round(bufferHeight*scale);
+        GLES20.glViewport((width-fittedWidth)/2,(height-fittedHeight)/2,fittedWidth,fittedHeight);
+        present();
+        GLES20.glViewport(0,0,width,height);
+    }
+    private void resetRate(){frameRate=null;sampleStart=0;framesInSample=0;}
+    private void recordFrame(){
+        long now=SystemClock.uptimeMillis();
+        if(sampleStart==0||now-sampleStart>1500){
+            resetRate();
+            sampleStart=now;
+        }
+        framesInSample++;
+        long elapsed=now-sampleStart;
+        if(elapsed>=1000){
+            frameRate=new FrameRate(Math.round(1000f*framesInSample/elapsed),now);
+            sampleStart=now;framesInSample=0;
+        }
     }
     private void present(){GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0);GLES20.glUseProgram(copyProgram);GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,compositeTexture);vertices.clear();vertices.put(new float[]{-1,1,1,1,-1,-1,1,-1}).position(0);coords.clear();coords.put(new float[]{0,1,1,1,0,0,1,0}).position(0);GLES20.glEnableVertexAttribArray(copyPosition);GLES20.glVertexAttribPointer(copyPosition,2,GLES20.GL_FLOAT,false,0,vertices);GLES20.glEnableVertexAttribArray(copyUv);GLES20.glVertexAttribPointer(copyUv,2,GLES20.GL_FLOAT,false,0,coords);GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);}
     private void draw(Scene.Box source,Scene.Box dest,Scene s,int[] size,int angle){
@@ -62,5 +184,17 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
         GLES20.glUniform4f(boundsLoc,Math.min(x1,x2)+.5f/sourceW,Math.min(y1,y2)+.5f/sourceH,Math.max(x1,x2)-.5f/sourceW,Math.max(y1,y2)-.5f/sourceH);
         GLES20.glEnableVertexAttribArray(position);GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices);GLES20.glEnableVertexAttribArray(uv);GLES20.glVertexAttribPointer(uv,2,GLES20.GL_FLOAT,false,0,coords);GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);
     }
-    void close(){closed=true;main.removeCallbacksAndMessages(null);queueEvent(()->{if(surface!=null)surface.release();if(input!=null){input.setOnFrameAvailableListener(null);input.release();}GLES20.glDeleteProgram(program);GLES20.glDeleteProgram(copyProgram);GLES20.glDeleteFramebuffers(1,new int[]{framebuffer},0);GLES20.glDeleteTextures(2,new int[]{tex,compositeTexture},0);});}
+    private synchronized void releaseInput(){
+        if(surface!=null){surface.release();surface=null;}
+        if(input!=null){input.setOnFrameAvailableListener(null);input.release();input=null;}
+    }
+    void close(){
+        closed=true;
+        main.removeCallbacksAndMessages(null);
+        queueEvent(this::releaseInput);
+    }
+    @Override protected void onDetachedFromWindow(){
+        super.onDetachedFromWindow();
+        if(closed)releaseInput();
+    }
 }

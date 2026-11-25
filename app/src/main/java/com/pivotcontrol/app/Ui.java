@@ -10,7 +10,7 @@ final class Ui {
     static final int BG=0xff0d1320,CARD=0xff182233,TEXT=0xfff4f6fc,MUTED=0xffacb9d0,ACCENT=0xffb9acff,BLUE=0xff578dff;
     final Context c;Ui(Context c){this.c=c;}
     int dp(float v){return Math.round(v*c.getResources().getDisplayMetrics().density);}
-    LinearLayout column(){LinearLayout v=new LinearLayout(c);v.setOrientation(1);return v;}
+    LinearLayout column(){LinearLayout v=new LinearLayout(c);v.setOrientation(LinearLayout.VERTICAL);return v;}
     LinearLayout row(){LinearLayout v=new LinearLayout(c);v.setGravity(Gravity.CENTER_VERTICAL);return v;}
     GradientDrawable shape(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
     TextView text(String t,int sp,int color){TextView v=new TextView(c);v.setText(t);v.setTextSize(sp);v.setTextColor(color);v.setLineSpacing(dp(3),1);v.setFontFeatureSettings("kern");return v;}

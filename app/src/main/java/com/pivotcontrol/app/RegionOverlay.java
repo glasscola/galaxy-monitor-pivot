@@ -9,7 +9,7 @@ import android.widget.*;
 final class RegionOverlay {
     interface Events{void apply(Scene s);void cancel();}
     private final Context context;private final WindowManager wm;private final Ui ui;private final Events events;
-    private Frame frame;private View panel;private Scene draft;private boolean editing;private int selected,phoneW,phoneH,monitorW,monitorH;private boolean panelTop;
+    private Frame frame;private View panel;private TextView zoomHint;private long nextZoomUpdate;private Scene draft;private boolean editing;private int selected,phoneW,phoneH,monitorW,monitorH;private boolean panelTop;
     RegionOverlay(Context c,Events e){context=c;events=e;wm=(WindowManager)c.getSystemService(Context.WINDOW_SERVICE);ui=new Ui(c);}
     void show(Scene s,boolean edit,int sw,int sh,int mw,int mh){hide();draft=s.copy();editing=edit;selected=Math.min(selected,draft.items.size()-1);phoneW=sw;phoneH=sh;monitorW=mw;monitorH=mh;
         try{frame=new Frame();WindowManager.LayoutParams p=params(-1,-1);if(!edit){p.flags|=WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;float opacity=.75f;if(Build.VERSION.SDK_INT>=31)opacity=Math.min(opacity,((InputManager)context.getSystemService(Context.INPUT_SERVICE)).getMaximumObscuringOpacityForTouch());p.alpha=opacity;}
@@ -24,9 +24,24 @@ final class RegionOverlay {
         LinearLayout ratio=ui.row();Button free=ui.button("자유 비율",!draft.lockRatio),lock=ui.button("모니터 비율",draft.lockRatio);ui.weight(ratio,free);ui.weight(ratio,lock);free.setOnClickListener(v->{draft.lockRatio=false;toolbar();});lock.setOnClickListener(v->{draft.lockRatio=true;int[] size=draft.canvas(monitorW,monitorH);draft.matchMonitor(phoneW,phoneH,monitorW,monitorH);frame.invalidate();toolbar();});ui.add(box,ratio,6);
         LinearLayout quick=ui.row();String[] names={"전체","위 절반","아래 절반"};for(int i=0;i<3;i++){final int k=i;Button b=ui.button(names[i],false);ui.weight(quick,b);b.setOnClickListener(v->{draft.items.get(selected).source=new Scene.Box(0,k==2?.5f:0,1,k==1?.5f:1);draft.lockRatio=false;frame.invalidate();toolbar();});}ui.add(box,quick,6);
         LinearLayout actions=ui.row();Button cancel=ui.button("취소",false),dim=ui.button(draft.dim?"음영 끄기":"음영 켜기",false),apply=ui.button("적용",true);ui.weight(actions,cancel);ui.weight(actions,dim);ui.weight(actions,apply);cancel.setOnClickListener(v->events.cancel());dim.setOnClickListener(v->{draft.dim=!draft.dim;frame.invalidate();toolbar();});apply.setOnClickListener(v->{draft.regions=true;events.apply(draft.copy());});ui.add(box,actions,6);
-        ScrollView scroll=new ScrollView(context);scroll.addView(box);panel=scroll;WindowManager.LayoutParams lp=params(Math.min(phoneW-ui.dp(24),ui.dp(480)),Math.min(ui.dp(330),Math.round(phoneH*.48f)));lp.gravity=(panelTop?Gravity.TOP:Gravity.BOTTOM)|Gravity.CENTER_HORIZONTAL;lp.y=ui.dp(panelTop?40:32);wm.addView(panel,lp);
+        zoomHint=ui.text("",12,Ui.MUTED);
+        ui.add(box,zoomHint,6);
+        updateZoomHint();
+        ScrollView scroll=new ScrollView(context);scroll.addView(box);panel=scroll;WindowManager.LayoutParams lp=params(Math.min(phoneW-ui.dp(24),ui.dp(480)),Math.min(ui.dp(370),Math.round(phoneH*.52f)));lp.gravity=(panelTop?Gravity.TOP:Gravity.BOTTOM)|Gravity.CENTER_HORIZONTAL;lp.y=ui.dp(panelTop?40:32);wm.addView(panel,lp);
     }
-    void hide(){if(panel!=null){try{wm.removeView(panel);}catch(Exception ignored){}panel=null;}if(frame!=null){try{wm.removeView(frame);}catch(Exception ignored){}frame=null;}}
+    private void updateZoomHint(){
+        if(zoomHint==null)return;
+        int[] input=Scene.captureSize(phoneW,phoneH,draft.highQuality);
+        int[] canvas=draft.canvas(monitorW,monitorH);
+        Scene.Region region=draft.items.get(selected);
+        float scale=Scene.placement(region.source,region.dest,input[0],input[1],
+                canvas[0],canvas[1],draft.scaling)[8];
+        String label=String.format(java.util.Locale.KOREA,"예상 표시 배율 %.2f배",scale);
+        if(scale>1.5f)label+=" · 글자가 흐리면 브라우저에서 먼저 확대하세요.";
+        Ui.update(zoomHint,label);
+        nextZoomUpdate=android.os.SystemClock.uptimeMillis()+100;
+    }
+    void hide(){zoomHint=null;if(panel!=null){try{wm.removeView(panel);}catch(Exception ignored){}panel=null;}if(frame!=null){try{wm.removeView(frame);}catch(Exception ignored){}frame=null;}}
     private final class Frame extends View {
         final Paint paint=new Paint(3);final int[] offset=new int[2];float downX,downY;Scene.Box original;int edge;
         Frame(){super(context);setSystemUiVisibility(SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION|SYSTEM_UI_FLAG_LAYOUT_STABLE);setContentDescription(editing?"영역 편집. 안쪽을 끌거나 손잡이로 크기를 조절하세요.":"선택 영역 안내. 터치는 사용 중인 앱에 전달됩니다.");}
@@ -46,8 +61,13 @@ final class RegionOverlay {
                 if(edge==0)b.move(original.l+dx,original.t+dy);else{
                     if((edge&1)!=0)b.l=Math.min(b.r-.04f,Math.max(0,original.l+dx));if((edge&2)!=0)b.r=Math.max(b.l+.04f,Math.min(1,original.r+dx));if((edge&4)!=0)b.t=Math.min(b.b-.04f,Math.max(0,original.t+dy));if((edge&8)!=0)b.b=Math.max(b.t+.04f,Math.min(1,original.b+dy));
                     if(draft.lockRatio){int[] size=draft.canvas(monitorW,monitorH);float ratio=size[0]/(float)size[1];if((edge&3)==0){float targetW=b.h()*phoneH*ratio/phoneW;b.l=(original.l+original.r-targetW)/2;b.r=b.l+targetW;}b=Scene.aspect(b,ratio,phoneW,phoneH);}
-                }draft.items.get(selected).source=b;invalidate();return true;}
-            if(e.getAction()==MotionEvent.ACTION_UP||e.getAction()==MotionEvent.ACTION_CANCEL){original=null;performClick();return true;}return true;
+                }
+                b.clamp();
+                draft.items.get(selected).source=b;
+                if(android.os.SystemClock.uptimeMillis()>=nextZoomUpdate)updateZoomHint();
+                invalidate();return true;
+            }
+            if(e.getAction()==MotionEvent.ACTION_UP||e.getAction()==MotionEvent.ACTION_CANCEL){original=null;updateZoomHint();performClick();return true;}return true;
         }
         @Override public boolean performClick(){super.performClick();return true;}
     }

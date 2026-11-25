@@ -1,8 +1,8 @@
-# Galaxy Monitor Pivot 2.0
+# Galaxy Monitor Pivot v3
 
 갤럭시에 연결한 외부 모니터에 **휴대폰 화면의 원하는 부분만 실시간으로 표시하는 Android 앱**입니다. 세로·가로 피벗과 함께, 화면 위의 테두리로 영역을 고르고 여러 부분을 한 모니터에 배치할 수 있습니다.
 
-**[APK v2.0.0 다운로드](https://github.com/glasscola/galaxy-monitor-pivot/releases/download/v2.0.0/PivotControl-2.0.0.apk)** · **[설치 및 사용 설명서](docs/USER_GUIDE.md)** · **[업데이트 내역](CHANGELOG.md)**
+**[모니터 피벗 v3 다운로드 · Android APK](https://github.com/glasscola/galaxy-monitor-pivot/releases/download/v3/PivotControl-v3.apk)** · **[설치 및 사용 설명서](docs/USER_GUIDE.md)** · **[업데이트 내역](CHANGELOG.md)**
 
 ## 테두리를 켠 채 웹서핑
 
@@ -36,6 +36,7 @@
 - **확대 정보:** 실제 입력·그리기 크기, 영역별 픽셀과 확대 배율.
 - **저장:** 영역·배치·방향·화질을 이름을 붙여 저장하고 불러오기.
 - **일시정지:** 마지막 모니터 화면을 유지했다가 최신 화면으로 재개.
+- **모니터 가리기:** 앱과 펼친 알림에서 공유를 유지한 채 모니터 화면을 검게 표시.
 
 | 출력 | 배치 | 화질 |
 | --- | --- | --- |
