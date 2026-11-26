@@ -7,6 +7,10 @@ public final class MirrorGeometry {
         if (outputW<=0||outputH<=0) throw new IllegalArgumentException("Invalid output size");
         return ((outputH>outputW)==portrait?0:90)+(reverse?180:0);
     }
+    static boolean reverseAfterClockwiseTurn(int outputW,int outputH,boolean portrait,boolean reverse) {
+        int nextAngle=(angle(outputW,outputH,portrait,reverse)+90)%360;
+        return nextAngle>=180;
+    }
     public static float scale(int sourceW,int sourceH,int outputW,int outputH,int angle,boolean fill) {
         if (sourceW<=0||sourceH<=0||outputW<=0||outputH<=0||angle%90!=0) throw new IllegalArgumentException("Invalid geometry");
         boolean quarter=(angle/90)%2!=0;

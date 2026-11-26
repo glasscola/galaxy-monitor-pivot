@@ -7,10 +7,6 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
@@ -53,11 +49,10 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
     private int pendingDisplay=-1, pendingTarget=-1;
     private String selectedUnique, pendingBefore;
     private TextView displayLine, permissionLine, message, pendingLine;
-    private Button portrait, landscape, restore, permission, confirm, cancel;
+    private Button portrait, landscape, quarterTurn, restore, permission, confirm, cancel;
     private Spinner selector;
     private Switch reverse;
-    private LinearLayout pendingBox;
-    private MonitorView preview;
+    private LinearLayout pendingBox, setup;
     private Shizuku.UserServiceArgs serviceArgs;
     private final Shizuku.OnBinderReceivedListener received = () -> ui.post(this::connectIfAllowed);
     private final Shizuku.OnBinderDeadListener dead = () -> ui.post(() -> { remote=null; binding=false; permissionLine.setText("Shizuku가 중지되었습니다. 다시 시작해 주세요."); updateControls(); });
@@ -105,13 +100,10 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
         ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setBackgroundColor(BG);
         LinearLayout page = column(); page.setPadding(dp(22),dp(26),dp(22),dp(26)); scroll.addView(page);
         scroll.setOnApplyWindowInsetsListener((v, insets) -> { android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars()); v.setPadding(bars.left,bars.top,bars.right,bars.bottom); return insets; });
-        TextView eyebrow = text("PIVOT CONTROL",12,ACCENT); eyebrow.setLetterSpacing(.16f); page.addView(eyebrow);
         TextView title = text("모니터 피벗",30,TEXT); title.setTypeface(null,Typeface.BOLD); add(page,title,7,0);
-        add(page,text("외부 화면의 방향을 버튼 하나로",15,MUTED),6,22);
-
-        LinearLayout screenCard = card(); page.addView(screenCard);
-        screenCard.addView(text("연결된 외부 모니터",13,MUTED));
-        selector = new Spinner(this); add(screenCard,selector,8,0);
+        displayLine = text("모니터를 연결해 주세요",14,MUTED);
+        add(page,displayLine,8,16);
+        selector = new Spinner(this);
         selector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id) {
                 if (position < screens.size()) { selectedId=screens.get(position).getDisplayId(); selectedUnique=identity(screens.get(position)); }
@@ -120,32 +112,38 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
-        preview = new MonitorView(); LinearLayout.LayoutParams pv = new LinearLayout.LayoutParams(-1,dp(175)); pv.topMargin=dp(10); screenCard.addView(preview,pv);
-        displayLine = text("모니터를 연결해 주세요",13,MUTED); displayLine.setGravity(Gravity.CENTER); add(screenCard,displayLine,6,0);
-
-        add(page,text("화면 방향",15,TEXT),24,10);
         LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); page.addView(row);
-        portrait = bigButton("▯  세로",true); landscape = bigButton("▭  가로",false);
-        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0,dp(84),1); half.rightMargin=dp(6); row.addView(portrait,half);
-        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0,dp(84),1); half2.leftMargin=dp(6); row.addView(landscape,half2);
+        portrait = bigButton("세로",false); landscape = bigButton("가로",false);
+        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0,dp(64),1); half.rightMargin=dp(6); row.addView(landscape,half);
+        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0,dp(64),1); half2.leftMargin=dp(6); row.addView(portrait,half2);
         portrait.setContentDescription("외부 모니터를 세로 방향으로 전환"); landscape.setContentDescription("외부 모니터를 가로 방향으로 전환");
         portrait.setOnClickListener(v -> rotate(true)); landscape.setOnClickListener(v -> rotate(false));
-        reverse = new Switch(this); reverse.setText("반대 방향으로 회전"); reverse.setTextColor(MUTED); reverse.setTextSize(14); reverse.setMinHeight(dp(50)); add(page,reverse,8,0);
+        quarterTurn = smallButton("↻ 90° 회전");
+        quarterTurn.setOnClickListener(v -> {
+            Display display=selected();
+            if(display!=null)applyRotation(display,(display.getRotation()+1)%4);
+        });
+        add(page,quarterTurn,8,0);
+        reverse = new Switch(this); reverse.setText("반대 방향으로 회전"); reverse.setTextColor(MUTED); reverse.setTextSize(14); reverse.setMinHeight(dp(50));
 
         pendingBox = card(); add(page,pendingBox,12,0); pendingBox.setVisibility(View.GONE);
         pendingLine = text("화면 확인 중",15,TEXT); pendingBox.addView(pendingLine);
         confirm = smallButton("화면이 정상이에요 · 유지"); add(pendingBox,confirm,10,0); confirm.setOnClickListener(v -> keep());
         cancel = smallButton("이전 방향으로 되돌리기"); add(pendingBox,cancel,4,0); cancel.setOnClickListener(v -> restore(true));
 
-        restore = smallButton("↶  원래 설정 복원"); add(page,restore,8,0); restore.setOnClickListener(v -> restore(false));
-        message = text("모니터 본체를 원하는 방향으로 돌린 뒤 버튼을 누르세요.",14,MUTED); message.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); add(page,message,12,20);
+        message = text("",14,MUTED); message.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); add(page,message,12,8);
 
-        LinearLayout setup = card(); page.addView(setup);
+        setup = card(); page.addView(setup);
         TextView setupTitle=text("처음 한 번, 회전 권한 연결",16,TEXT); setupTitle.setTypeface(null,Typeface.BOLD); setup.addView(setupTitle);
         permissionLine = text("Shizuku 실행 상태를 확인하고 있습니다.",13,MUTED); add(setup,permissionLine,8,10);
         permission = smallButton("Shizuku 연결 / 권한 허용"); setup.addView(permission); permission.setOnClickListener(v -> requestConnection());
         Button help = smallButton("설치·연결 방법 보기"); add(setup,help,4,0); help.setOnClickListener(v -> help());
-        add(page,text("Android 11 이상 · USB 영상 출력 지원 기기\n화면 복제 / DeX의 회전 지원 여부는 기종에 따라 달라요.",12,MUTED),16,0);
+        add(page,selector,12,0);
+        restore = smallButton("원래 방향 설정 복원"); add(page,restore,8,0); restore.setOnClickListener(v -> restore(false));
+        add(page,reverse,4,0);
+        Button mirror = smallButton("부분 출력·화면 공유");
+        mirror.setOnClickListener(v -> startActivity(new Intent(this,MirrorActivity.class)));
+        add(page,mirror,12,0);
         setContentView(scroll);
     }
     private void refreshDisplays() {
@@ -170,7 +168,7 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
                     if (closing||generation!=displayGeneration) return;
                     identities.putAll(described); Display d=selected(); selectedUnique=d==null?null:identity(d);
                     pendingBefore=selectedUnique==null?null:prefs.getString("pending:"+selectedUnique,null);
-                    if (d!=null&&selectedUnique==null) message.setText("이 화면은 직접 회전할 수 없습니다. DeX 연결된 디스플레이 설정을 확인해 주세요.");
+                    if (d!=null&&selectedUnique==null) message.setText("이 외부 화면에서 직접 회전을 사용할 수 없습니다.");
                     updateDisplay(); poll();
                 });
             });
@@ -183,23 +181,30 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
     }
     private void updateDisplay() {
         Display d=selected();
-        if (d==null) { displayLine.setText("영상 출력 가능한 USB-C 케이블로 연결해 주세요"); preview.connected=false; }
+        if (d==null) { displayLine.setText("모니터를 연결해 주세요"); }
         else {
             android.graphics.Point size=new android.graphics.Point(); d.getRealSize(size);
-            displayLine.setText(size.x+" × "+size.y+"  ·  "+(size.y>size.x?"세로":"가로")+"  ·  "+d.getRotation()*90+"°");
-            preview.connected=true; preview.portrait=size.y>size.x;
+            displayLine.setText(d.getName()+" · "+(size.y>size.x?"세로":"가로"));
         }
-        preview.invalidate(); updateControls();
+        updateControls();
     }
     private void updateControls() {
-        boolean ready=remote!=null && remote.isBinderAlive() && selected()!=null && selectedUnique!=null && !busy && !pending;
+        Display d=selected();
+        boolean connected=remote!=null&&remote.isBinderAlive();
+        boolean ready=connected && d!=null && selectedUnique!=null && !busy && !pending && !MirrorService.running;
         portrait.setEnabled(ready); landscape.setEnabled(ready); reverse.setEnabled(!busy&&!pending);
+        quarterTurn.setEnabled(ready);
+        setup.setVisibility(connected?View.GONE:View.VISIBLE);
+        selector.setVisibility(screens.size()>1?View.VISIBLE:View.GONE);
+        reverse.setVisibility(connected&&selectedUnique!=null?View.VISIBLE:View.GONE);
+        restore.setVisibility(selectedUnique!=null&&prefs.contains("original:"+selectedUnique)?View.VISIBLE:View.GONE);
+        if(MirrorService.running)message.setText("화면 공유 중입니다. 직접 회전하려면 부분 출력·화면 공유에서 먼저 종료하세요.");
         portrait.setAlpha(ready?1f:.35f); landscape.setAlpha(ready?1f:.35f);
         restore.setEnabled(ready && prefs.contains("original:"+selectedUnique));
         selector.setEnabled(!busy&&!pending);
         permission.setEnabled(!binding && !busy); permission.setText(remote!=null?"제어 연결됨":binding?"연결 중…":"Shizuku 연결 / 권한 허용");
         pendingBox.setVisibility(pending?View.VISIBLE:View.GONE);
-        Display d=selected(); confirm.setEnabled(pending&&!busy&&d!=null&&d.getDisplayId()==pendingDisplay&&d.getRotation()==pendingTarget);
+        confirm.setEnabled(pending&&!busy&&d!=null&&d.getDisplayId()==pendingDisplay&&d.getRotation()==pendingTarget);
         cancel.setEnabled(pending&&!busy&&d!=null&&pendingBefore!=null);
     }
     private void requestConnection() {
@@ -242,10 +247,15 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
         } finally { in.recycle(); out.recycle(); }
     }
     private void rotate(boolean portraitMode) {
-        Display d=selected(); if (d==null||busy||pending) return;
-        String unique=identity(d);
+        Display d=selected(); if (d==null) return;
         Display.Mode mode=d.getMode();
         int target=RotationPolicy.target(mode.getPhysicalHeight()>mode.getPhysicalWidth(),portraitMode,reverse.isChecked());
+        applyRotation(d,target);
+    }
+    private void applyRotation(Display d,int target){
+        if(busy||pending||MirrorService.running)return;
+        String unique=identity(d);
+        if(unique==null)return;
         busy=true; message.setText("외부 화면에 회전 명령을 보내고 있습니다…"); updateControls();
         io.execute(() -> {
             try {
@@ -264,7 +274,11 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
         Display d=selected(); if (d==null||busy) return; busy=true; updateControls();
         String unique=identity(d);
         io.execute(() -> {
-            try { callFor(PivotService.KEEP,d,0,null,unique); ui.post(() -> { busy=false; pending=false; message.setText("선택한 화면 방향을 유지합니다. 다른 앱을 열어도 설정은 유지돼요."); updateDisplay(); }); }
+            try {
+                callFor(PivotService.KEEP,d,0,null,unique);
+                prefs.edit().putBoolean("confirmed:"+unique,true).apply();
+                ui.post(() -> { busy=false; pending=false; message.setText("선택한 화면 방향을 유지합니다."); updateDisplay(); });
+            }
             catch (Exception e) { ui.post(() -> { busy=false; error(e.getMessage()); updateControls(); }); }
         });
     }
@@ -277,7 +291,7 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
         io.execute(() -> {
             try {
                 callFor(PivotService.RESTORE,d,0,saved,unique);
-                if (!previous) prefs.edit().remove("original:"+unique).remove("pending:"+unique).commit();
+                if (!previous) prefs.edit().remove("original:"+unique).remove("pending:"+unique).remove("confirmed:"+unique).commit();
                 ui.post(() -> { busy=false; pending=false; message.setText(previous?"이전 방향으로 되돌렸습니다.":"처음 연결했을 때의 회전 설정으로 복원했습니다."); updateDisplay(); });
             } catch (Exception e) { ui.post(() -> { busy=false; error(e.getMessage()); updateControls(); }); }
         });
@@ -293,6 +307,10 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
                     if (result.startsWith("PENDING|")) {
                         String[] s=result.split("\\|"); pending=true; pendingDisplay=Integer.parseInt(s[1]); pendingTarget=Integer.parseInt(s[2]);
                         Display now=selected(); boolean matched=now!=null&&now.getDisplayId()==pendingDisplay&&now.getRotation()==pendingTarget;
+                        if(matched&&selectedUnique!=null&&prefs.getBoolean("confirmed:"+selectedUnique,false)){
+                            keep();
+                            return;
+                        }
                         pendingLine.setText((matched?"방향이 바뀌었습니다. 화면이 정상인가요?":"회전 적용을 확인하고 있습니다…")+"\n"+s[3]+"초 후 자동 복원");
                         if (!matched&&Integer.parseInt(s[3])<12) message.setText("회전이 확인되지 않습니다. 이 기종의 화면 복제 또는 DeX가 외부 화면 회전을 막을 수 있어요.");
                     } else if (pending) {
@@ -323,18 +341,4 @@ public class MainActivity extends Activity implements DisplayManager.DisplayList
     private Button bigButton(String title,boolean primary) { Button b=new Button(this); b.setText(title); b.setTextSize(23); b.setTypeface(null,Typeface.BOLD); b.setTextColor(primary?0xff17112f:TEXT); b.setAllCaps(false); b.setBackground(shape(primary?ACCENT:0xff303548,18)); return b; }
     private Button smallButton(String title) { Button b=new Button(this); b.setText(title); b.setTextSize(14); b.setTextColor(ACCENT); b.setAllCaps(false); b.setMinHeight(dp(48)); b.setBackground(shape(0xff252a3b,12)); return b; }
 
-    private class MonitorView extends View {
-        boolean connected, portrait; final Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);
-        MonitorView() { super(MainActivity.this); setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); }
-        @Override protected void onDraw(Canvas c) {
-            float w=dp(portrait?86:184),h=dp(portrait?135:110),left=(getWidth()-w)/2,top=dp(7);
-            p.setColor(connected?0xff7764d8:0xff4a5064); p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(dp(3));
-            c.drawRoundRect(new RectF(left,top,left+w,top+h),dp(9),dp(9),p);
-            p.setStyle(Paint.Style.FILL); p.setColor(0xff272c41); c.drawRoundRect(new RectF(left+dp(7),top+dp(7),left+w-dp(7),top+h-dp(7)),dp(5),dp(5),p);
-            p.setColor(connected?ACCENT:0xff69718a); p.setTextAlign(Paint.Align.CENTER); p.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL)); p.setTextSize(dp(22));
-            c.drawText(connected?(portrait?"세로":"가로"):"연결 대기",getWidth()/2f,top+h/2+dp(8),p);
-            p.setColor(connected?0xff7764d8:0xff4a5064); c.drawRoundRect(new RectF(getWidth()/2f-dp(3),top+h,getWidth()/2f+dp(3),top+h+dp(12)),dp(2),dp(2),p);
-            c.drawRoundRect(new RectF(getWidth()/2f-dp(25),top+h+dp(12),getWidth()/2f+dp(25),top+h+dp(15)),dp(2),dp(2),p);
-        }
-    }
 }

@@ -21,6 +21,7 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
     private volatile boolean paused,covered,closed;
     private boolean fresh,hasFrame,renderScheduled;
     private int bufferWidth,bufferHeight,framesInSample;
+    private int maxBufferDimension;
     private long lastFrame,sampleStart;
     private volatile FrameRate frameRate;
     private final Runnable drawInput=()->{
@@ -34,6 +35,8 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
         FrameRate(int frames,long sampledAt){this.frames=frames;this.sampledAt=sampledAt;}
     }
     StreamRenderer(Context c,int w,int h,Ready r){super(c);sourceW=w;sourceH=h;listener=r;setEGLContextClientVersion(2);setPreserveEGLContextOnPause(true);setRenderer(this);setRenderMode(RENDERMODE_WHEN_DIRTY);}
+    private volatile boolean comparingSharpness;
+    void compareSharpness(boolean before){comparingSharpness=before;requestRender();}
     void configure(Scene s){scene=s.copy();requestRender();}
     void pauseStream(boolean pause){paused=pause;requestRender();}
     void coverStream(boolean cover){covered=cover;requestRender();}
@@ -54,6 +57,9 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
         // The previous EGL context owned these names. Never use them in the new context.
         releaseInput();
         framebuffer=0;compositeTexture=0;bufferWidth=0;bufferHeight=0;
+        int[] limit=new int[1];
+        GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE,limit,0);
+        maxBufferDimension=limit[0];
         hasComposite=false;hasFrame=false;
         synchronized(this){fresh=false;lastFrame=0;}
         resetRate();
@@ -88,7 +94,10 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
     }
 
     private boolean prepareBuffer(){
-        if(bufferWidth==width&&bufferHeight==height)return true;
+        float scale=maxBufferDimension>0?Math.min(1f,maxBufferDimension/(float)Math.max(width,height)):1f;
+        int targetWidth=Math.max(1,Math.round(width*scale));
+        int targetHeight=Math.max(1,Math.round(height*scale));
+        if(bufferWidth==targetWidth&&bufferHeight==targetHeight)return true;
         if(framebuffer!=0)GLES20.glDeleteFramebuffers(1,new int[]{framebuffer},0);
         if(compositeTexture!=0)GLES20.glDeleteTextures(1,new int[]{compositeTexture},0);
         hasComposite=false;
@@ -100,7 +109,7 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_NEAREST);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE);
-        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,width,height,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,null);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,targetWidth,targetHeight,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,null);
         GLES20.glGenFramebuffers(1,id,0);
         framebuffer=id[0];
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,framebuffer);
@@ -111,7 +120,7 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
             main.post(()->listener.error("외부 화면 버퍼를 만들 수 없습니다."));
             return false;
         }
-        bufferWidth=width;bufferHeight=height;
+        bufferWidth=targetWidth;bufferHeight=targetHeight;
         return true;
     }
     @Override public void onDrawFrame(GL10 unused){
@@ -135,12 +144,15 @@ final class StreamRenderer extends GLSurfaceView implements GLSurfaceView.Render
         }
         if(!hasFrame||!prepareBuffer()){clearOutput();return;}
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,framebuffer);
+        GLES20.glViewport(0,0,bufferWidth,bufferHeight);
         GLES20.glClearColor(.015f,.02f,.035f,1);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-        GLES20.glUseProgram(program);GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,tex);GLES20.glUniformMatrix4fv(matrixLoc,1,false,transform,0);GLES20.glUniform2f(stepLoc,1f/sourceW,1f/sourceH);GLES20.glUniform1f(sharpLoc,s.sharpness);
+        GLES20.glUseProgram(program);GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,tex);GLES20.glUniformMatrix4fv(matrixLoc,1,false,transform,0);GLES20.glUniform2f(stepLoc,1f/sourceW,1f/sourceH);GLES20.glUniform1f(sharpLoc,comparingSharpness?0f:s.sharpness);
         int[] canvas=s.canvas(width,height);int angle=MirrorGeometry.angle(width,height,s.portrait,s.reverse);
         if(!s.regions)draw(new Scene.Box(0,0,1,1),new Scene.Box(0,0,1,1),s,canvas,angle);
         else for(Scene.Region region:s.items)draw(region.source,region.dest,s,canvas,angle);
-        hasComposite=true;present();
+        hasComposite=true;
+        GLES20.glViewport(0,0,width,height);
+        present();
         if(newFrame)recordFrame();
     }
     private void clearOutput(){

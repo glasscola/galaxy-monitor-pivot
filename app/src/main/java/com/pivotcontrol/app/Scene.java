@@ -8,6 +8,7 @@ public final class Scene {
     public boolean portrait=true,reverse=false,regions=false,dim=true,highQuality=true,lockRatio=false;
     public int scaling=FIT,layout=0,fps=60;
     public float sharpness=0;
+    public boolean hasSavedRegions;
     public final ArrayList<Region> items=new ArrayList<>();
     public Scene() { items.add(new Region(.05f,.25f,.95f,.55f)); }
     public static final class Box {
@@ -28,8 +29,22 @@ public final class Scene {
         public Region(float l,float t,float r,float b){source=new Box(l,t,r,b);dest=new Box(0,0,1,1);}
         public Region copy(){Region v=new Region(source.l,source.t,source.r,source.b);v.dest=dest.copy();return v;}
     }
-    public Scene copy(){Scene s=new Scene();s.portrait=portrait;s.reverse=reverse;s.regions=regions;s.dim=dim;s.highQuality=highQuality;s.lockRatio=lockRatio;s.scaling=scaling;s.layout=layout;s.fps=fps;s.sharpness=sharpness;s.items.clear();for(Region r:items)s.items.add(r.copy());return s;}
+    public Scene copy(){Scene s=new Scene();s.portrait=portrait;s.reverse=reverse;s.regions=regions;s.hasSavedRegions=hasSavedRegions;s.dim=dim;s.highQuality=highQuality;s.lockRatio=lockRatio;s.scaling=scaling;s.layout=layout;s.fps=fps;s.sharpness=sharpness;s.items.clear();for(Region r:items)s.items.add(r.copy());return s;}
     public int[] canvas(int w,int h){return portrait?new int[]{Math.min(w,h),Math.max(w,h)}:new int[]{Math.max(w,h),Math.min(w,h)};}
+    void restoreRegionLayout(Scene previous){
+        items.clear();
+        for(Region region:previous.items)items.add(region.copy());
+        layout=previous.layout;
+        lockRatio=previous.lockRatio;
+    }
+    public void selectTopAndBottom(){
+        items.clear();
+        items.add(new Region(0,.08f,1,.32f));
+        items.add(new Region(0,.68f,1,.92f));
+        layout=0;
+        lockRatio=false;
+        arrange();
+    }
     public void arrange(){
         int n=items.size();if(layout==2)return;
         for(int i=0;i<n;i++)items.get(i).dest=layout==0?new Box(0,i/(float)n,1,(i+1f)/n):new Box(i/(float)n,0,(i+1f)/n,1);
